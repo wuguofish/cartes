@@ -1,13 +1,13 @@
 # MCP 共桌版驗證報告
 
 驗證日期：2026-09-01
-驗證範圍：`feat/mcp-server` 本機 Host、人類 UI、多 Agent STDIO MCP adapter
+驗證範圍：`feat/remote-mcp` 本機 STDIO、Streamable HTTP Remote MCP、加密持久化、人類 UI 與多 Agent 共桌
 
 ## 結論
 
-目前自動化驗證為 **PASS**：MCP game core 與原版瀏覽器規則在固定牌序下逐步一致；一位人類與多個獨立 Agent 能依序完成同一局；每個 Agent 的通知游標互相獨立；已測的 UI API 與 MCP 成功、錯誤、版本衝突及冪等重試路徑都沒有回傳未翻開的莊家底牌或剩餘牌堆。
+目前自動化驗證為 **PASS**：MCP game core 與原版瀏覽器規則在固定牌序下逐步一致；一位人類與多個獨立 Agent 能依序完成同一局；每個 Agent 的通知游標互相獨立；已測的本機與 Remote UI／MCP 成功、錯誤、版本衝突及冪等重試路徑都沒有回傳未翻開的莊家底牌或剩餘牌堆。
 
-這個結論只適用於 loopback 本機 Host。它不是遠端服務的安全認證。
+Remote 測試涵蓋目前實作的傳輸、身分與資料邊界，但不是第三方滲透測試或外部 OIDC provider 的相容性認證；TLS、reverse proxy、主機權限與 Authorization Server 仍須由實際部署者驗證。
 
 ## 自動化證據
 
@@ -23,8 +23,8 @@ git diff --check
 
 結果：
 
-- 20 個 Node 測試全部通過；
-- 2 個真實無頭 Chrome E2E 測試通過；
+- 26 個 Node 測試全部通過；
+- 3 個真實無頭 Chrome E2E 測試通過；
 - TypeScript typecheck 通過；
 - npm audit：0 vulnerabilities；
 - `git diff --check` 通過。
@@ -72,6 +72,20 @@ git diff --check
 
 另由 `test/stdio.test.ts` 啟動兩個真正獨立的編譯後 STDIO server process，確認它們能加入同一張人類牌桌，並透過共用 Host 看到彼此的加入事件；每個 process 仍只持有自己的 Agent 座位憑證。
 
+## Remote MCP 與持久化安全測試
+
+`test/remote-mcp.test.ts` 透過官方 MCP SDK 的 `StreamableHTTPClientTransport` 連接真實 HTTP listener，驗證：
+
+- 未帶 Bearer token 的每個 MCP request 都回 `401` 與 `WWW-Authenticate`；
+- 非 allowlist 的 `Origin` 在進入 MCP transport 前被拒絕；
+- 另一個 Bearer principal 即使取得 MCP session ID，也無法重用該 session；
+- 不同 token 取得不同 Agent 座位，同一 token 建立新 MCP session 時只會接回原座位；
+- 新 session 接管後舊座位 capability 失效，不會留下兩個同身分控制者；
+- 未授權訪客不能建立人類牌桌；
+- Streamable HTTP tool result 仍沒有 `deck` 或莊家暗牌 canary。
+
+`test/store-persistence.test.ts` 讓牌局進入 Agent 回合後關閉原 store，再以同一加密檔與金鑰建立新 store。原人類 token 能恢復同一牌桌，原 remote principal 能接回相同 seat ID、手牌與合法動作；舊 Agent token 被撤銷。直接檢查落地 JSON envelope 時，看不到人類／Agent token、玩家名稱或暗牌明文；錯誤 `CARTES_STATE_KEY` 會 fail closed，不能載入狀態。
+
 ## 真實 Codex 與 UI 端到端
 
 以本機 `codex exec` 連接實際 MCP 設定，從人類瀏覽器 UI 完成一局 21 點：
@@ -93,6 +107,8 @@ git diff --check
 
 第二條瀏覽器 E2E 會在 UI 已保存人類 token 後重啟同一連接埠的 Host。因記憶體牌桌已不存在，頁面重新整理後必須回到建桌畫面、顯示原桌已不存在，並從 `localStorage` 清除失效 token。
 
+第三條瀏覽器 E2E 使用 Remote 模式的建桌密碼與加密狀態檔，先由真正 Chrome UI 建桌，再同時關閉整個瀏覽器與 Remote Host。以同一公開來源、瀏覽器 profile、狀態檔與金鑰重啟後，人類必須自動回到相同邀請碼的牌桌，證明 Remote 人類續桌不只停留在 store 單元測試。
+
 ## 第二局續接測試
 
 以 Codex 與 Claude Code 完成第一局後，人類直接開始第二局。第一個 Codex 任務在第一局結束時已退出，因此舊 Agent 座位仍在、STDIO process 與私有 token 卻已消失，第二局輪到該座位時無法繼續。這個案例確認不能用公開名稱自動認領舊座位，也證明多局玩法需要明確的 reconnect lifecycle。
@@ -109,5 +125,7 @@ git diff --check
 
 ## 尚待下一階段
 
-- 若做 Remote MCP：補 TLS、OAuth、呼叫者身分綁定席位、撤銷、資源限制與跨桌存取測試；
+- 以實際公開 HTTPS staging、Codex OAuth 與 Claude Code OAuth 各跑一次外部 OIDC provider 相容性測試；
+- 若要水平擴充多副本，將單檔持久化替換成具交易與 row lock 的資料庫；
+- 增加跨裝置的人類帳號登入與座位找回；
 - 若加入真人多人或觀戰者，為每種角色新增獨立視角與權限測試。

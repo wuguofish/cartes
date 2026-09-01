@@ -1,6 +1,6 @@
 # Cartes MCP 共桌版
 
-這是 [muxihana/cartes](https://github.com/muxihana/cartes) 的 fork：保留原本完全在瀏覽器運作的單檔牌桌，另外加入本機 Cartes Host、人類操作 UI 與 STDIO MCP Server，讓一位人類可以直接和多個 Codex／Claude Code Agent 一起玩 21 點或十點半。
+這是 [muxihana/cartes](https://github.com/muxihana/cartes) 的 MCP 主線 fork：保留原本完全在瀏覽器運作的單檔牌桌，另外加入 Cartes Host、人類操作 UI，以及可自由選擇的本機 STDIO／自行架設 Streamable HTTP MCP Server，讓一位人類可以直接和多個 Codex／Claude Code Agent 一起玩 21 點或十點半。
 
 ## 這個 fork 多了什麼
 
@@ -10,9 +10,10 @@
 - 一次性人類授權重連碼，可由新 MCP process 安全接回原座位、手牌與戰績；
 - 人類誤關分頁或瀏覽器後，用同一個瀏覽器重新開啟頁面會自動回到原桌；
 - `leave_table` 永久離桌與人類 UI「移除」功能，進行中離桌也會自動交棒，不會卡住牌局；
-- optimistic concurrency、冪等寫入、獨立事件游標與多層暗牌洩漏測試。
+- optimistic concurrency、冪等寫入、獨立事件游標與多層暗牌洩漏測試；
+- 本機 STDIO 零帳號快速開桌，或 Remote MCP 的身分綁定、加密持久化與 Host 重啟續桌。
 
-## 五分鐘開桌
+## 五分鐘本機開桌
 
 需求：Node.js 20 以上。
 
@@ -42,6 +43,36 @@ claude mcp add --transport stdio --scope user cartes -- node D:\絕對路徑\car
 重啟 MCP client 後，在人類 UI 按「複製邀請詞」交給 Agent 即可。不是 Agent 回合時，它應持續呼叫 `wait_for_table_event`；要暫時斷線請走 UI 的安全重連，確定不再保留座位時才呼叫 `leave_table`。
 
 人類座位憑證會保存在 `http://127.0.0.1:3210` 這個瀏覽器來源的 `localStorage`。誤關分頁或整個瀏覽器後，只要 Host 沒有停止，用同一個瀏覽器重開網址就會自動回桌；Host 若已重啟，舊憑證會自動清除並回到建桌畫面。共用電腦上的其他使用者若能開啟同一個瀏覽器設定檔，也會取得該人類座位，使用完畢請關閉 Host 或清除該網站資料。
+
+## 自行架設 Remote MCP
+
+Remote 模式和本機 STDIO 共用同一套遊戲核心與雙盲視角，但多了 Streamable HTTP、逐請求身分驗證、呼叫者座位綁定，以及 AES-256-GCM 加密狀態檔。服務重啟後，人類可用原瀏覽器座位憑證回桌；Agent 用同一 Bearer／OAuth 身分再次呼叫 `join_table`，會接回原座位。
+
+正式部署必須放在 HTTPS reverse proxy 後方。先執行 `npm run generate:remote-secrets -- xiaokui` 產生狀態金鑰、人類建桌密碼與 Agent token，把輸出的 Agent JSON 存成不進版控的 `data/remote-keys.json`，再設定：
+
+```powershell
+$env:CARTES_PUBLIC_URL="https://cartes.example.com"
+$env:CARTES_STATE_KEY="產生的狀態金鑰"
+$env:CARTES_HUMAN_ACCESS_KEY="產生的人類建桌密碼"
+$env:CARTES_REMOTE_KEYS_FILE="$PWD\data\remote-keys.json"
+npm run start:remote
+```
+
+Codex 使用靜態 Bearer token：
+
+```powershell
+$env:CARTES_AGENT_TOKEN="remote-keys.json 裡分配給這個 Agent 的 token"
+codex mcp add cartes-remote --url https://cartes.example.com/mcp --bearer-token-env-var CARTES_AGENT_TOKEN
+```
+
+Claude Code 可保留環境變數占位符，不必把 token 寫入 repo：
+
+```powershell
+$env:CARTES_AGENT_TOKEN="remote-keys.json 裡分配給這個 Agent 的 token"
+claude mcp add --transport http --scope user cartes-remote https://cartes.example.com/mcp --header 'Authorization: Bearer ${CARTES_AGENT_TOKEN}'
+```
+
+若已有 OIDC/OAuth 2.1 provider，可改設 `CARTES_OIDC_ISSUER`、`CARTES_OIDC_AUDIENCE` 與 `CARTES_OIDC_REQUIRED_SCOPE`；Remote Server 會提供 Protected Resource Metadata，Codex／Claude Code 可走各自的 MCP OAuth 登入流程。完整環境變數、TLS、身分模型與安全界線請看 [`docs/MCP.md`](docs/MCP.md)。
 
 ## 驗證
 

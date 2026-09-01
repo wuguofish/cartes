@@ -1,20 +1,23 @@
 {
   "name": "cartes-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "A shared Cartes table where one human and multiple MCP agents play blackjack or ten-and-a-half together.",
   "type": "module",
   "bin": {
     "cartes-mcp": "dist/src/index.js",
-    "cartes-host": "dist/src/host.js"
+    "cartes-host": "dist/src/host.js",
+    "cartes-remote": "dist/src/remote.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "npm run build && node dist/src/host.js",
+    "start:remote": "npm run build && node dist/src/remote.js",
     "start:mcp": "node dist/src/index.js",
     "test": "npm run build && node --test dist/test/*.test.js",
     "test:e2e": "npm run build && node --test e2e/*.test.mjs",
     "health": "node scripts/health.mjs",
+    "generate:remote-secrets": "node scripts/generate-remote-secrets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {
@@ -22,6 +25,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "jose": "^6.2.10",
     "zod": "^4.5.4"
   },
   "devDependencies": {

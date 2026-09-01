@@ -12,6 +12,11 @@ export interface CartesHostOptions {
   readonly port?: number;
   readonly store?: MultiplayerTableStore;
   readonly webRoot?: string;
+  readonly extension?: CartesHostExtension;
+}
+
+export interface CartesHostExtension {
+  handle(request: IncomingMessage, response: ServerResponse): Promise<boolean>;
 }
 
 export interface RunningCartesHost {
@@ -29,7 +34,7 @@ export async function startCartesHost(options: CartesHostOptions = {}): Promise<
   const store = options.store ?? new MultiplayerTableStore();
   const webRoot = options.webRoot ?? DEFAULT_WEB_ROOT;
   const server = createServer((request, response) => {
-    void routeRequest(store, webRoot, request, response).catch((error: unknown) => {
+    void routeRequest(store, webRoot, options.extension, request, response).catch((error: unknown) => {
       if (response.headersSent) {
         response.destroy();
         return;
@@ -58,14 +63,17 @@ export async function startCartesHost(options: CartesHostOptions = {}): Promise<
 async function routeRequest(
   store: MultiplayerTableStore,
   webRoot: string,
+  extension: CartesHostExtension | undefined,
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
 
+  if (extension && (await extension.handle(request, response))) return;
+
   if (method === "GET" && url.pathname === "/api/health") {
-    sendJson(response, 200, { ok: true, service: "cartes-host", version: "0.2.0" });
+    sendJson(response, 200, { ok: true, service: "cartes-host", version: "0.3.0" });
     return;
   }
   if (method === "POST" && url.pathname === "/api/tables") {

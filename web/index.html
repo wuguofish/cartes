@@ -21,12 +21,16 @@
         <div class="setup-copy">
           <p class="eyebrow">OPEN A TABLE</p>
           <h2>你開桌，Agent 憑邀請碼入座</h2>
-          <p>牌堆只存在本機主機；瀏覽器與每個 Agent 都只拿到自己的合法視角。</p>
+          <p>牌堆只存在 Cartes Host；瀏覽器與每個 Agent 都只拿到自己的合法視角。</p>
         </div>
         <form id="createForm" class="create-form">
           <label>
             你的名字
             <input id="humanName" name="humanName" maxlength="80" value="阿童" required />
+          </label>
+          <label id="remoteAccessLabel" hidden>
+            遠端建桌密碼
+            <input id="remoteAccessKey" name="remoteAccessKey" type="password" minlength="32" autocomplete="current-password" />
           </label>
           <fieldset>
             <legend>玩法</legend>
