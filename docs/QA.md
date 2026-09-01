@@ -19,6 +19,7 @@ npm run test:e2e
 npm run typecheck
 npm audit --audit-level=high
 git diff --check
+docker build -t cartes-remote:test .
 ```
 
 結果：
@@ -27,7 +28,22 @@ git diff --check
 - 3 個真實無頭 Chrome E2E 測試通過；
 - TypeScript typecheck 通過；
 - npm audit：0 vulnerabilities；
-- `git diff --check` 通過。
+- `git diff --check` 通過；
+- Docker image build 通過，實際容器 smoke test 亦通過。
+
+## Docker Remote MCP smoke test
+
+以 `cartes-remote:test` 啟動隔離的暫時容器，映射至 localhost 測試連接埠，使用靜態 Bearer principal、Remote 人類建桌密碼與暫時的加密狀態檔。驗證結果：
+
+- image 能完整執行 multi-stage build，production dependencies 的 npm audit 為 0 vulnerabilities；
+- runtime 以 `node` 非 root 使用者執行，Docker healthcheck 回報 `healthy`；
+- `/api/remote-health` 回報 `streamable-http`、`bearer` 與 `encrypted-file`；
+- 未帶人類建桌密碼的 `POST /api/tables` 回 `401`，帶正確密碼則回 `201` 並建立牌桌；
+- 未帶 Bearer token 的 `POST /mcp` 回 `401`；
+- 落地狀態只有 AES-256-GCM envelope 欄位（`algorithm`、`iv`、`tag`、`ciphertext`），沒有明文牌桌狀態；
+- server log 未輸出測試用 Bearer token、人類建桌密碼或狀態加密金鑰。
+
+測試容器已在驗證後停止並由 `--rm` 自動刪除；本機僅保留 `cartes-remote:test` image 供後續重測。
 
 ## 規則對拍
 
