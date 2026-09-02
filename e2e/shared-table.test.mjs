@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
 import test from "node:test";
 
 import { chromium } from "playwright-core";
@@ -9,6 +10,9 @@ import { chromium } from "playwright-core";
 import { CartesHostClient } from "../dist/src/host-client.js";
 import { startCartesHost } from "../dist/src/host-server.js";
 import { MultiplayerTableStore } from "../dist/src/multiplayer-store.js";
+import { StaticTokenAuthenticator } from "../dist/src/remote-auth.js";
+import { RemoteMcpGateway } from "../dist/src/remote-mcp.js";
+import { EncryptedFileTablePersistence, generateStateKey } from "../dist/src/store-persistence.js";
 
 const THREE_SEAT_DECK = ["♠5", "♥6", "♦7", "♣9", "♦6", "♣5", "♠4", "♥8", "♠2", "♥3"];
 
@@ -103,6 +107,45 @@ test("a stale human resume token is cleared after the in-memory Host restarts", 
   assert.equal(await page.evaluate(() => localStorage.getItem("cartes_human_token")), null);
 });
 
+test("the remote human resumes after both the browser and encrypted Host restart", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "cartes-e2e-remote-"));
+  const profileDir = join(directory, "chrome-profile");
+  const statePath = join(directory, "state.enc.json");
+  const stateKey = generateStateKey();
+  const humanAccessKey = "human-e2e-remote-access-key-000000000001";
+  const port = await availablePort();
+  const publicUrl = `http://127.0.0.1:${port}`;
+  const authenticator = new StaticTokenAuthenticator({ e2e: "agent-e2e-remote-token-0000000000000001" });
+
+  let remote = await startRemoteHost({ port, publicUrl, statePath, stateKey, humanAccessKey, authenticator });
+  let browserContext = await chromium.launchPersistentContext(profileDir, browserLaunchOptions());
+  let page = browserContext.pages()[0] ?? await browserContext.newPage();
+  context.after(async () => {
+    await browserContext.close().catch(() => undefined);
+    await remote.gateway.close().catch(() => undefined);
+    await remote.host.close().catch(() => undefined);
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  await page.goto(publicUrl);
+  await page.getByLabel("遠端建桌密碼").waitFor({ state: "visible" });
+  await page.getByLabel("遠端建桌密碼").fill(humanAccessKey);
+  await page.getByRole("button", { name: "建立共桌牌局" }).click();
+  await page.locator("#tablePanel").waitFor({ state: "visible" });
+  const joinCode = (await page.locator("#joinCode").innerText()).trim();
+
+  await browserContext.close();
+  await remote.gateway.close();
+  await remote.host.close();
+  remote = await startRemoteHost({ port, publicUrl, statePath, stateKey, humanAccessKey, authenticator });
+  browserContext = await chromium.launchPersistentContext(profileDir, browserLaunchOptions());
+  page = browserContext.pages()[0] ?? await browserContext.newPage();
+  await page.goto(publicUrl);
+  await page.locator("#tablePanel").waitFor({ state: "visible" });
+  assert.equal((await page.locator("#joinCode").innerText()).trim(), joinCode);
+  assert.equal(await page.evaluate(() => Boolean(localStorage.getItem("cartes_human_token"))), true);
+});
+
 function browserLaunchOptions() {
   const executablePath = process.env.CARTES_BROWSER_EXECUTABLE;
   if (executablePath) return { executablePath, headless: true };
@@ -114,4 +157,25 @@ async function waitForSeatCount(page, expected) {
     (count) => document.querySelector("#seatCount")?.textContent === String(count),
     expected,
   );
+}
+
+async function startRemoteHost({ port, publicUrl, statePath, stateKey, humanAccessKey, authenticator }) {
+  const store = new MultiplayerTableStore(undefined, {
+    persistence: new EncryptedFileTablePersistence(statePath, stateKey),
+  });
+  const gateway = new RemoteMcpGateway({ store, authenticator, publicUrl, humanAccessKey });
+  const host = await startCartesHost({ hostname: "127.0.0.1", port, store, extension: gateway });
+  return { gateway, host };
+}
+
+async function availablePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Could not allocate a TCP port.");
+  await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  return address.port;
 }

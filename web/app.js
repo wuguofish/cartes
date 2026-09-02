@@ -3,14 +3,20 @@
 
   const TOKEN_KEY = "cartes_human_token";
   const legacyToken = sessionStorage.getItem(TOKEN_KEY) || "";
-  const state = { token: localStorage.getItem(TOKEN_KEY) || legacyToken, table: null, polling: null, busy: false };
+  const state = {
+    token: localStorage.getItem(TOKEN_KEY) || legacyToken,
+    table: null,
+    polling: null,
+    busy: false,
+    remote: false,
+  };
   if (legacyToken && !localStorage.getItem(TOKEN_KEY)) localStorage.setItem(TOKEN_KEY, legacyToken);
   sessionStorage.removeItem(TOKEN_KEY);
   const elements = Object.fromEntries(
     [
       "connectionBadge", "setupPanel", "createForm", "humanName", "tablePanel", "joinCode", "copyInvite",
       "dealerPoints", "dealerCards", "roundLabel", "turnLabel", "playerSeats", "startRound", "hit", "stand",
-      "seatCount", "roster", "chatLog", "chatForm", "chatInput", "statusLine",
+      "seatCount", "roster", "chatLog", "chatForm", "chatInput", "statusLine", "remoteAccessLabel", "remoteAccessKey",
     ].map((id) => [id, document.getElementById(id)]),
   );
 
@@ -22,6 +28,7 @@
         method: "POST",
         body: { mode, human_name: elements.humanName.value.trim() },
         authenticated: false,
+        humanAccess: true,
       });
       state.token = result.human_token;
       localStorage.setItem(TOKEN_KEY, state.token);
@@ -257,6 +264,7 @@
     const headers = { Accept: "application/json" };
     if (options.body) headers["Content-Type"] = "application/json";
     if (options.authenticated !== false) headers.Authorization = `Bearer ${state.token}`;
+    if (options.humanAccess && state.remote) headers["X-Cartes-Human-Key"] = elements.remoteAccessKey.value;
     const response = await fetch(path, {
       method: options.method,
       headers,
@@ -308,9 +316,14 @@
     setStatus("原本的牌桌已不存在，請重新開桌。", true);
   }
 
-  if (state.token) {
-    refresh().then(startPolling).catch(() => {
-      clearHumanSession();
-    });
-  }
+  fetch("/api/remote-config", { headers: { Accept: "application/json" } })
+    .then((response) => (response.ok ? response.json() : null))
+    .then((config) => {
+      state.remote = Boolean(config?.remote);
+      elements.remoteAccessLabel.hidden = !state.remote;
+      elements.remoteAccessKey.required = state.remote;
+    })
+    .catch(() => {});
+
+  if (state.token) refresh().then(startPolling).catch(() => clearHumanSession());
 })();

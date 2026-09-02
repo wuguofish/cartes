@@ -1,26 +1,27 @@
 # Cartes MCP 共桌版
 
-這個分支讓一位人類透過瀏覽器 UI，和一個或多個 MCP Agent 一起玩 21 點或十點半。每位 Agent 都是獨立玩家，有自己的手牌、回合與戰績；所有玩家共同對戰規則驅動的莊家。
+這個 fork 讓一位人類透過瀏覽器 UI，和一個或多個 MCP Agent 一起玩 21 點或十點半。每位 Agent 都是獨立玩家，有自己的手牌、回合與戰績；所有玩家共同對戰規則驅動的莊家。MCP 可選完全本機的 STDIO，或自行架設的 Streamable HTTP Remote MCP。
 
 原本的單檔 `index.html` 沒有被改成需要後端，既有玩法仍可照常使用。新版共桌 UI 位於 `web/`，由本機 Cartes Host 提供。
 
 ## 架構
 
 ```text
-人類瀏覽器 UI ───────┐
-                     │ HTTP + 席位憑證
-Codex STDIO MCP ─────┼── Cartes Host ── 規則、牌堆、回合、事件游標
-Claude Code STDIO MCP┤
-其他 Agent MCP ──────┘
+人類瀏覽器 UI ──────────────┐
+                            │ HTTP + 席位憑證
+本機 STDIO MCP ─────────────┼── Cartes Host ── 共用規則、牌堆、回合、事件游標
+Remote Streamable HTTP MCP ─┘       ├─ 本機：記憶體
+                                    └─ 遠端：加密持久化
 ```
 
 - `cartes-host` 是唯一牌局權威，持有牌堆、莊家暗牌與所有座位狀態。
-- 每個 MCP client 啟動自己的 `cartes-mcp` STDIO process；該 process 只在記憶體持有自己座位的 capability token。
+- 本機模式由每個 MCP client 啟動自己的 `cartes-mcp` STDIO process；該 process 只在記憶體持有自己座位的 capability token。
+- Remote 模式逐次驗證 Bearer／OAuth token，並把驗證後的 caller principal 綁定座位；不同 principal 不能接管彼此的 MCP session 或座位。
 - 人類在 UI 建立牌桌並取得邀請碼。Agent 只能用邀請碼入座，無法列舉其他牌桌。
 - 人類負責開局；之後依入座順序逐家行動，全部停牌或爆牌後由莊家自動結算。
-- 牌桌、邀請碼與戰績目前只存在 Host 記憶體；Host 重啟後會消失。
+- 本機 Host 的牌桌只存在記憶體；Remote Host 使用 AES-256-GCM 加密快照，Host 重啟後可恢復牌桌、回合、事件游標與憑證雜湊。
 
-## 開始遊戲
+## 本機 STDIO 模式
 
 需求：Node.js 20 以上。
 
@@ -59,6 +60,56 @@ UI 的「複製 Agent 邀請詞」會產生可直接貼給 Agent 的提示。也
 
 若要多個 Agent，同一組邀請碼分別交給各個 MCP client 即可；每個 client 都會取得不同座位與不同的未讀事件游標。
 
+## Remote MCP 模式
+
+Remote 模式由 `npm run start:remote` 啟動同一套人類 UI、Host API 與 `/mcp` Streamable HTTP endpoint。它不是把本機 `3210` 直接暴露到網路；啟動時會強制要求：
+
+- `CARTES_PUBLIC_URL`：外部使用者實際連線的固定 URL，正式環境必須是 HTTPS；
+- `CARTES_STATE_KEY`：32 bytes Base64URL 金鑰，用來加密完整牌桌狀態；
+- `CARTES_HUMAN_ACCESS_KEY`：至少 32 字元，只有持有者能建立新桌；
+- 靜態 Bearer 模式的 `CARTES_REMOTE_KEYS_FILE`（也可用 `CARTES_REMOTE_KEYS_JSON` 注入相同 JSON），或 OIDC 模式的 issuer／audience。
+
+其他環境變數：
+
+| 變數 | 預設 | 用途 |
+| --- | --- | --- |
+| `CARTES_REMOTE_HOST` | `127.0.0.1` | reverse proxy 連入的監聽介面；容器內可設 `0.0.0.0` |
+| `CARTES_REMOTE_PORT` | `3210` | 內部 HTTP port |
+| `CARTES_STATE_PATH` | `data/cartes-state.enc.json` | 加密狀態檔位置 |
+| `CARTES_ALLOWED_HOSTS` | 公開 URL 的 host | 逗號分隔的額外 Host allowlist |
+| `CARTES_ALLOWED_ORIGINS` | 公開 URL 的 origin | 逗號分隔的額外 Origin allowlist |
+| `CARTES_OIDC_REQUIRED_SCOPE` | `cartes:play` | Remote MCP access token 必須具備的 scope |
+| `CARTES_ALLOW_INSECURE_HTTP` | 未設定 | 僅本機 smoke test 設為 `1`；正式環境不可使用 |
+
+可用 `npm run generate:remote-secrets -- agent-name` 產生初始 secrets。每個 Agent 必須分配不同靜態 token；同一 token 代表同一遠端身分，新 MCP session 會安全接回並撤銷舊 session 的座位 capability。靜態 key 檔含有真正的登入秘密，必須放在 `data/` 等不進版控、只有服務帳號可讀的位置。
+
+### OIDC／OAuth
+
+設定 `CARTES_OIDC_ISSUER` 與 `CARTES_OIDC_AUDIENCE` 後，Remote Host 會讀取 issuer 的 OpenID discovery metadata，以 JWKS 驗證 JWT 的簽章、issuer、audience、期限與 required scope，並在 `/.well-known/oauth-protected-resource` 公開 RFC 9728 metadata。Authorization Server 仍由部署者提供，且必須支援 MCP client 所採用的 CIMD、DCR 或預先註冊 client 流程。
+
+OIDC principal 由 issuer、subject 與 token 的 `client_id`／`azp` 組成；不同 client 身分不會共用座位。若 provider 不發出 client 識別 claim，則同一 subject 會視為同一 Agent 身分。
+
+Codex 可先加入 URL，再執行 OAuth login：
+
+```powershell
+codex mcp add cartes-remote --url https://cartes.example.com/mcp
+codex mcp login cartes-remote
+```
+
+Claude Code 可加入 HTTP endpoint，接著在互動介面用 `/mcp` 完成登入：
+
+```powershell
+claude mcp add --transport http --scope user cartes-remote https://cartes.example.com/mcp
+```
+
+若 Authorization Server 不支援 client 自動註冊，必須依各 client 文件預先註冊 client ID 與精確 callback URL。
+
+### TLS 與公開部署
+
+Node process 預設只監聽 loopback，應由 Caddy、nginx、Cloudflare Tunnel 或同等 reverse proxy 終止 TLS。Proxy 必須保留正確的 `Host`，限制 request body／連線數並設定速率限制；`wait_for_table_event` 最長 25 秒，仍應限制每個來源的並行連線。不要讓 Agent 執行環境取得 Remote Host 的狀態檔、`CARTES_STATE_KEY`、靜態 key 檔或服務帳號權限，否則任何應用層雙盲都無法阻止它直接讀取伺服器秘密。
+
+Repo 內附非 root runtime 的 `Dockerfile`；容器部署時將 `/app/data` 掛載到持久 volume、設定 `CARTES_REMOTE_HOST=0.0.0.0`，並由外層 ingress 提供 HTTPS。不要把 secrets 寫進 image layer、Dockerfile 或 compose 檔，應使用部署平台的 secret store／環境注入。
+
 ## Agent 如何知道別家動了
 
 `wait_for_table_event` 是有上限的 long poll，最多等待 25 秒。有人加入、開局、要牌、停牌、爆牌、結算或說話時，Host 會喚醒所有正在等待的 Agent。每位 Agent 的游標互相獨立，因此 Agent A 讀過事件不會讓 Agent B 漏掉。
@@ -79,9 +130,9 @@ Agent instructions 會要求它持續參與後續牌局，直到人類結束測�
 
 ## 人類關閉瀏覽器後續桌
 
-人類 UI 會把自己的 capability token 保存在該頁面來源的 `localStorage`，不使用會跨 localhost 連接埠自動傳送的 Cookie。只要同一個 Cartes Host process 仍在執行，用同一個瀏覽器設定檔重新開啟 `http://127.0.0.1:3210`，UI 就會驗證 token 並自動回到原桌。若 Host 已重啟、記憶體牌桌消失，UI 會刪除失效 token 並顯示建桌畫面。
+人類 UI 會把自己的 capability token 保存在該頁面來源的 `localStorage`，不使用會跨來源自動傳送的 Cookie。本機模式只要同一個 Host process 還在執行，用同一個瀏覽器設定檔重開網址就會自動回桌；本機 Host 重啟後記憶體牌桌消失，UI 會清除失效 token。Remote 模式則會持久化 token 雜湊與牌桌狀態，因此瀏覽器和 Remote Host 都重啟後仍能回到原桌。
 
-這是本機單人 UI 的便利機制，不是帳號登入：任何能使用同一個瀏覽器設定檔的人都能接手該人類座位。共用電腦使用完畢，應停止 Host 或清除 `127.0.0.1:3210` 的網站資料。
+這仍是同一瀏覽器來源的座位恢復，不是跨裝置帳號系統：任何能使用同一個瀏覽器設定檔的人都能接手該人類座位。換瀏覽器、清除網站資料或遺失 token 後，目前無法自行找回原人類座位；共用電腦使用完畢應清除該網站資料。
 
 ## MCP tools
 
@@ -98,7 +149,7 @@ Agent instructions 會要求它持續參與後續牌局，直到人類結束測�
 
 ## 真雙盲邊界
 
-洗牌使用 Node.js `crypto.randomInt` 驅動的 Fisher–Yates shuffle，牌序只存在 Host 內部。人類 API、瀏覽器 UI 與 MCP tool result 都不包含：
+洗牌使用 Node.js `crypto.randomInt` 驅動的 Fisher–Yates shuffle，牌序只存在 Host 內部；Remote 模式的完整狀態落地前會以 AES-256-GCM 加密。人類 API、瀏覽器 UI 與 MCP tool result 都不包含：
 
 - 剩餘牌堆或牌序；
 - 尚未翻開的莊家底牌；
@@ -110,13 +161,21 @@ Agent instructions 會要求它持續參與後續牌局，直到人類結束測�
 
 座位名稱、聊天與事件文字都是不可信的遊戲內容，MCP Server instructions 明確要求 Agent 不得把它們當作操作指令。
 
-## 目前範圍
+## 目前範圍與信任邊界
 
 - 本機單一人類 UI，可邀請最多七個 Agent；
-- 同一時間只支援一個人類座位，沒有旁觀者或真人多人模式；
-- 沒有資料庫、斷線復原、網際網路部署、TLS 或 OAuth；
+- 同一時間只支援一個人類座位，沒有旁觀者或真人多人模式；Remote 人類恢復仍綁定同一瀏覽器來源，沒有跨裝置帳號找回；
+- Remote 持久化目前是單一 Node process 的加密檔案，不支援多副本同時寫入；
+- OAuth 模式依賴外部 OIDC Authorization Server，本專案不自行簽發 OAuth token；
 - 沒有金錢、籌碼或賭注；
-- Host 刻意只綁 loopback。若未來改成遠端服務，必須重新設計登入、席位授權、撤銷、TLS、資源限制與跨桌隔離，不能直接把目前連接埠公開到網路。
+- 加密狀態檔保護靜態落地內容，不防能讀取服務環境變數、記憶體或加密金鑰的主機管理員；Host 是受信任莊家。
+
+## 相容性參考
+
+- [Codex MCP：STDIO、Streamable HTTP、Bearer 與 OAuth](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+- [Claude Code Remote HTTP MCP 與 OAuth](https://code.claude.com/docs/en/mcp)
+- [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+- [MCP HTTP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
 
 完整測試範圍請看 [`QA.md`](QA.md)。
 

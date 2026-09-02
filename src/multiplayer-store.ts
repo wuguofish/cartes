@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import {
   classifyHand,
@@ -128,6 +128,7 @@ interface Seat {
   status: SeatStatus;
   result: SeatResult | null;
   readonly records: { player: number; dealer: number; push: number };
+  principalId: string | null;
 }
 
 interface Receipt<T> {
@@ -136,7 +137,7 @@ interface Receipt<T> {
 }
 
 interface AgentSession {
-  readonly token: string;
+  readonly tokenHash: string;
   readonly seatId: string;
   cursor: number;
 }
@@ -147,7 +148,6 @@ interface Waiter {
 }
 
 interface ReconnectTicket {
-  readonly code: string;
   readonly seatId: string;
   readonly expiresAtMs: number;
 }
@@ -155,7 +155,7 @@ interface ReconnectTicket {
 interface Table {
   readonly id: string;
   readonly joinCode: string;
-  readonly humanToken: string;
+  readonly humanTokenHash: string;
   readonly mode: GameMode;
   phase: TablePhase;
   version: number;
@@ -174,6 +174,15 @@ interface Table {
   readonly reconnectTickets: Map<string, ReconnectTicket>;
 }
 
+export interface MultiplayerTablePersistence {
+  load(): unknown | null;
+  save(snapshot: unknown): void;
+}
+
+export interface MultiplayerTableStoreOptions {
+  readonly persistence?: MultiplayerTablePersistence;
+}
+
 export type MultiplayerDeckFactory = (mode: GameMode, round: number, seatCount: number) => readonly (Card | string)[];
 
 const MAX_SEATS = 8;
@@ -188,10 +197,18 @@ export class MultiplayerTableStore {
   readonly #agentTokens = new Map<string, string>();
   readonly #humanTokens = new Map<string, string>();
   readonly #departedAgentTokens = new Map<string, AgentLeaveResult>();
+  readonly #principalSeats = new Map<string, { tableId: string; seatId: string }>();
   readonly #deckFactory: MultiplayerDeckFactory;
+  readonly #persistence: MultiplayerTablePersistence | undefined;
 
-  constructor(deckFactory: MultiplayerDeckFactory = () => shuffledDeck()) {
+  constructor(
+    deckFactory: MultiplayerDeckFactory = () => shuffledDeck(),
+    options: MultiplayerTableStoreOptions = {},
+  ) {
     this.#deckFactory = deckFactory;
+    this.#persistence = options.persistence;
+    const snapshot = this.#persistence?.load();
+    if (snapshot) this.#restore(snapshot);
   }
 
   createTable(mode: GameMode, humanName: string): HumanTableResult {
@@ -206,11 +223,12 @@ export class MultiplayerTableStore {
       status: "waiting",
       result: null,
       records: { player: 0, dealer: 0, push: 0 },
+      principalId: null,
     };
     const table: Table = {
       id,
       joinCode,
-      humanToken,
+      humanTokenHash: capabilityHash(humanToken),
       mode,
       phase: "lobby",
       version: 1,
@@ -230,15 +248,37 @@ export class MultiplayerTableStore {
     };
     this.#tables.set(id, table);
     this.#joinCodes.set(joinCode, id);
-    this.#humanTokens.set(humanToken, id);
+    this.#humanTokens.set(table.humanTokenHash, id);
     this.#appendEvent(table, "table_created", humanSeat, `${humanSeat.name} 建立了牌桌。`);
+    this.#persist();
     return { human_token: humanToken, table: this.#view(table, humanSeat.id) };
   }
 
   joinAgent(joinCode: string, agentName: string): AgentJoinResult {
-    const tableId = this.#joinCodes.get(joinCode.trim().toUpperCase());
-    if (!tableId) throw new Error("找不到這組邀請碼。");
-    const table = this.#requireTable(tableId);
+    return this.#joinNewAgent(this.#tableForJoinCode(joinCode), agentName, null);
+  }
+
+  joinAgentForPrincipal(joinCode: string, agentName: string, principalId: string): AgentJoinResult {
+    const normalizedPrincipal = normalizePrincipal(principalId);
+    const table = this.#tableForJoinCode(joinCode);
+    const binding = this.#principalSeats.get(normalizedPrincipal);
+    if (binding) {
+      const boundTable = this.#tables.get(binding.tableId);
+      const boundSeat = boundTable?.seats.find((seat) => seat.id === binding.seatId);
+      if (!boundTable || !boundSeat || boundSeat.kind !== "agent") {
+        this.#principalSeats.delete(normalizedPrincipal);
+      } else {
+        if (boundTable.id !== table.id) throw new Error("這個遠端 MCP 身分已經綁定另一張牌桌的座位。");
+        if (boundSeat.name !== normalizeName(agentName, "AI 玩家")) {
+          throw new Error("這個遠端 MCP 身分與既有 Agent 名稱不符。");
+        }
+        return this.#reconnectSeat(table, boundSeat, normalizedPrincipal);
+      }
+    }
+    return this.#joinNewAgent(table, agentName, normalizedPrincipal);
+  }
+
+  #joinNewAgent(table: Table, agentName: string, principalId: string | null): AgentJoinResult {
     if (table.phase === "player_turns") throw new Error("本局已經開始，請等牌局結束後再加入。");
     if (table.seats.length >= MAX_SEATS) throw new Error(`這張牌桌最多 ${MAX_SEATS} 個座位。`);
     const name = normalizeName(agentName, "AI 玩家");
@@ -251,17 +291,21 @@ export class MultiplayerTableStore {
       status: "waiting",
       result: null,
       records: { player: 0, dealer: 0, push: 0 },
+      principalId,
     };
     const token = capabilityToken();
-    const session: AgentSession = { token, seatId: seat.id, cursor: table.nextEventId - 1 };
+    const tokenHash = capabilityHash(token);
+    const session: AgentSession = { tokenHash, seatId: seat.id, cursor: table.nextEventId - 1 };
     table.seats.push(seat);
-    table.agentSessions.set(token, session);
-    this.#agentTokens.set(token, table.id);
+    table.agentSessions.set(tokenHash, session);
+    this.#agentTokens.set(tokenHash, table.id);
+    if (principalId) this.#principalSeats.set(principalId, { tableId: table.id, seatId: seat.id });
     table.version += 1;
     this.#appendEvent(table, "seat_joined", seat, `${seat.name} 加入了牌桌。`);
     session.cursor = table.nextEventId - 1;
     const result = { agent_token: token, table: this.#view(table, seat.id) };
     this.#flushWaiters(table);
+    this.#persist();
     return result;
   }
 
@@ -275,9 +319,10 @@ export class MultiplayerTableStore {
     let code: string;
     do {
       code = randomBytes(9).toString("base64url").toUpperCase();
-    } while (table.reconnectTickets.has(code));
+    } while (table.reconnectTickets.has(capabilityHash(code)));
     const expiresAtMs = Date.now() + RECONNECT_TICKET_TTL_MS;
-    table.reconnectTickets.set(code, { code, seatId: seat.id, expiresAtMs });
+    table.reconnectTickets.set(capabilityHash(code), { seatId: seat.id, expiresAtMs });
+    this.#persist();
     return {
       reconnect_code: code,
       expires_at: new Date(expiresAtMs).toISOString(),
@@ -287,20 +332,52 @@ export class MultiplayerTableStore {
   }
 
   rejoinAgent(joinCode: string, agentName: string, reconnectCode: string): AgentJoinResult {
-    const tableId = this.#joinCodes.get(joinCode.trim().toUpperCase());
-    if (!tableId) throw new Error("找不到這組邀請碼。");
-    const table = this.#requireTable(tableId);
-    const code = reconnectCode.trim().toUpperCase();
-    const ticket = table.reconnectTickets.get(code);
+    const table = this.#tableForJoinCode(joinCode);
+    const codeHash = capabilityHash(reconnectCode.trim().toUpperCase());
+    const ticket = table.reconnectTickets.get(codeHash);
     if (!ticket || ticket.expiresAtMs <= Date.now()) {
-      if (ticket) table.reconnectTickets.delete(code);
+      if (ticket) table.reconnectTickets.delete(codeHash);
       throw new Error("重連碼無效或已過期，請由人類玩家重新產生。");
     }
     const seat = this.#requireSeat(table, ticket.seatId);
     if (seat.kind !== "agent" || seat.name !== normalizeName(agentName, "AI 玩家")) {
       throw new Error("重連碼與 Agent 座位不符。");
     }
-    table.reconnectTickets.delete(code);
+    if (seat.principalId) throw new Error("這個座位已綁定遠端 MCP 身分，請用原身分重新連線。");
+    table.reconnectTickets.delete(codeHash);
+    return this.#reconnectSeat(table, seat, null);
+  }
+
+  rejoinAgentForPrincipal(
+    joinCode: string,
+    agentName: string,
+    reconnectCode: string,
+    principalId: string,
+  ): AgentJoinResult {
+    const table = this.#tableForJoinCode(joinCode);
+    const normalizedPrincipal = normalizePrincipal(principalId);
+    const codeHash = capabilityHash(reconnectCode.trim().toUpperCase());
+    const ticket = table.reconnectTickets.get(codeHash);
+    if (!ticket || ticket.expiresAtMs <= Date.now()) {
+      if (ticket) table.reconnectTickets.delete(codeHash);
+      throw new Error("重連碼無效或已過期，請由人類玩家重新產生。");
+    }
+    const seat = this.#requireSeat(table, ticket.seatId);
+    if (seat.kind !== "agent" || seat.name !== normalizeName(agentName, "AI 玩家")) {
+      throw new Error("重連碼與 Agent 座位不符。");
+    }
+    if (seat.principalId && seat.principalId !== normalizedPrincipal) {
+      throw new Error("這個座位已綁定另一個遠端 MCP 身分。");
+    }
+    const existing = this.#principalSeats.get(normalizedPrincipal);
+    if (existing && (existing.tableId !== table.id || existing.seatId !== seat.id)) {
+      throw new Error("這個遠端 MCP 身分已經綁定另一個座位。");
+    }
+    table.reconnectTickets.delete(codeHash);
+    return this.#reconnectSeat(table, seat, normalizedPrincipal);
+  }
+
+  #reconnectSeat(table: Table, seat: Seat, principalId: string | null): AgentJoinResult {
     for (const [token, session] of table.agentSessions) {
       if (session.seatId !== seat.id) continue;
       const waiter = table.waiters.get(token);
@@ -313,13 +390,19 @@ export class MultiplayerTableStore {
       this.#agentTokens.delete(token);
     }
     const token = capabilityToken();
-    const session: AgentSession = { token, seatId: seat.id, cursor: table.nextEventId - 1 };
-    table.agentSessions.set(token, session);
-    this.#agentTokens.set(token, table.id);
+    const tokenHash = capabilityHash(token);
+    const session: AgentSession = { tokenHash, seatId: seat.id, cursor: table.nextEventId - 1 };
+    table.agentSessions.set(tokenHash, session);
+    this.#agentTokens.set(tokenHash, table.id);
+    if (principalId) {
+      seat.principalId = principalId;
+      this.#principalSeats.set(principalId, { tableId: table.id, seatId: seat.id });
+    }
     this.#appendEvent(table, "seat_reconnected", seat, `${seat.name} 重新連回牌桌。`);
     session.cursor = table.nextEventId - 1;
     const result = { agent_token: token, table: this.#view(table, seat.id) };
     this.#flushWaiters(table);
+    this.#persist();
     return result;
   }
 
@@ -334,12 +417,13 @@ export class MultiplayerTableStore {
   }
 
   leaveAgent(agentToken: string): AgentLeaveResult {
-    const replay = this.#departedAgentTokens.get(agentToken);
+    const replay = this.#departedAgentTokens.get(capabilityHash(agentToken));
     if (replay) return structuredClone(replay);
     const { table, session } = this.#tableForAgent(agentToken);
     const seat = this.#requireSeat(table, session.seatId);
     const result = this.#leaveResult(table, seat);
     this.#removeAgentSeat(table, seat, `${seat.name} 離開了牌桌。`, result);
+    this.#persist();
     return result;
   }
 
@@ -358,7 +442,9 @@ export class MultiplayerTableStore {
     const seat = this.#requireSeat(table, seatId);
     if (seat.kind !== "agent") throw new Error("只能移除 Agent 座位。");
     this.#removeAgentSeat(table, seat, `${seat.name} 被人類玩家移出牌桌。`, this.#leaveResult(table, seat));
-    return this.#remember(table, humanSeat.id, idempotencyKey, operation, this.#view(table, humanSeat.id));
+    const result = this.#remember(table, humanSeat.id, idempotencyKey, operation, this.#view(table, humanSeat.id));
+    this.#persist();
+    return result;
   }
 
   startRound(humanToken: string, expectedVersion: number, idempotencyKey: string): PublicTableView {
@@ -396,6 +482,7 @@ export class MultiplayerTableStore {
     this.#activateNextSeat(table, -1);
     const result = this.#remember(table, humanSeat.id, idempotencyKey, operation, this.#view(table, humanSeat.id));
     this.#flushWaiters(table);
+    this.#persist();
     return result;
   }
 
@@ -433,16 +520,19 @@ export class MultiplayerTableStore {
   async waitForAgentEvents(agentToken: string, timeoutMs: number): Promise<AgentEventResult> {
     const { table, session } = this.#tableForAgent(agentToken);
     const immediate = this.#consumeUnreadEvents(table, session);
-    if (immediate.length) return this.#eventResult(table, session, immediate, false);
-    if (table.waiters.has(agentToken)) throw new Error("這個 Agent 已經有一個等待中的事件請求。");
+    if (immediate.length) {
+      this.#persist();
+      return this.#eventResult(table, session, immediate, false);
+    }
+    if (table.waiters.has(session.tokenHash)) throw new Error("這個 Agent 已經有一個等待中的事件請求。");
     const boundedTimeout = Math.max(0, Math.min(timeoutMs, 25_000));
     if (boundedTimeout === 0) return this.#eventResult(table, session, [], true);
     return new Promise<AgentEventResult>((resolve) => {
       const timer = setTimeout(() => {
-        table.waiters.delete(agentToken);
+        table.waiters.delete(session.tokenHash);
         resolve(this.#eventResult(table, session, [], true));
       }, boundedTimeout);
-      table.waiters.set(agentToken, { resolve, timer });
+      table.waiters.set(session.tokenHash, { resolve, timer });
     });
   }
 
@@ -483,6 +573,7 @@ export class MultiplayerTableStore {
     table.version += 1;
     const result = this.#remember(table, seat.id, idempotencyKey, operation, this.#view(table, seat.id));
     this.#flushWaiters(table);
+    this.#persist();
     return result;
   }
 
@@ -504,6 +595,7 @@ export class MultiplayerTableStore {
     if (table.chat.length > CHAT_CAP) table.chat.splice(0, table.chat.length - CHAT_CAP);
     const result = this.#remember(table, seat.id, idempotencyKey, operation, this.#view(table, seat.id));
     this.#flushWaiters(table);
+    this.#persist();
     return result;
   }
 
@@ -528,6 +620,7 @@ export class MultiplayerTableStore {
     for (const [code, ticket] of table.reconnectTickets) {
       if (ticket.seatId === seat.id) table.reconnectTickets.delete(code);
     }
+    if (seat.principalId) this.#principalSeats.delete(seat.principalId);
     for (const receiptKey of table.receipts.keys()) {
       if (receiptKey.startsWith(`${seat.id}:`)) table.receipts.delete(receiptKey);
     }
@@ -683,24 +776,31 @@ export class MultiplayerTableStore {
   }
 
   #tableForHuman(token: string): Table {
-    const tableId = this.#humanTokens.get(token);
+    const tableId = this.#humanTokens.get(capabilityHash(token));
     if (!tableId) throw new Error("人類座位憑證無效。");
     return this.#requireTable(tableId);
   }
 
   #tableForAgent(token: string): { table: Table; session: AgentSession } {
-    const tableId = this.#agentTokens.get(token);
+    const tokenHash = capabilityHash(token);
+    const tableId = this.#agentTokens.get(tokenHash);
     if (!tableId) throw new Error("Agent 座位憑證無效，請重新加入牌桌。");
     const table = this.#requireTable(tableId);
-    const session = table.agentSessions.get(token);
+    const session = table.agentSessions.get(tokenHash);
     if (!session) throw new Error("Agent 座位已失效。");
     return { table, session };
   }
 
   #requireTable(tableId: string): Table {
     const table = this.#tables.get(tableId);
-    if (!table) throw new Error("找不到這張牌桌；牌桌主機重啟後，記憶體牌桌會消失。");
+    if (!table) throw new Error("找不到這張牌桌；牌桌可能已失效或未從持久化狀態恢復。");
     return table;
+  }
+
+  #tableForJoinCode(joinCode: string): Table {
+    const tableId = this.#joinCodes.get(joinCode.trim().toUpperCase());
+    if (!tableId) throw new Error("找不到這組邀請碼。");
+    return this.#requireTable(tableId);
   }
 
   #requireSeat(table: Table, seatId: string): Seat {
@@ -737,10 +837,125 @@ export class MultiplayerTableStore {
       if (!this.#joinCodes.has(code)) return code;
     }
   }
+
+  #persist(): void {
+    this.#persistence?.save({
+      format: "cartes-multiplayer-store",
+      version: 1,
+      tables: [...this.#tables.values()].map((table) => ({
+        id: table.id,
+        joinCode: table.joinCode,
+        humanTokenHash: table.humanTokenHash,
+        mode: table.mode,
+        phase: table.phase,
+        version: table.version,
+        round: table.round,
+        deck: table.deck.map((card) => card.code),
+        dealerCards: table.dealerCards.map((card) => card.code),
+        holeRevealed: table.holeRevealed,
+        activeSeatId: table.activeSeatId,
+        seats: table.seats.map((seat) => ({
+          id: seat.id,
+          kind: seat.kind,
+          name: seat.name,
+          cards: seat.cards.map((card) => card.code),
+          status: seat.status,
+          result: seat.result,
+          records: seat.records,
+          principalId: seat.principalId,
+        })),
+        agentSessions: [...table.agentSessions.values()].map((session) => ({ ...session })),
+        events: table.events,
+        chat: table.chat,
+        nextEventId: table.nextEventId,
+        receipts: [...table.receipts.entries()],
+        reconnectTickets: [...table.reconnectTickets.entries()],
+      })),
+      departedAgentTokens: [...this.#departedAgentTokens.entries()],
+    });
+  }
+
+  #restore(value: unknown): void {
+    const snapshot = value as {
+      format?: unknown;
+      version?: unknown;
+      tables?: unknown[];
+      departedAgentTokens?: [string, AgentLeaveResult][];
+    };
+    if (snapshot.format !== "cartes-multiplayer-store" || snapshot.version !== 1 || !Array.isArray(snapshot.tables)) {
+      throw new Error("Cartes 持久化檔案格式無效或版本不支援。");
+    }
+    for (const raw of snapshot.tables) {
+      const saved = raw as Record<string, unknown>;
+      if (typeof saved.id !== "string" || typeof saved.joinCode !== "string" || typeof saved.humanTokenHash !== "string") {
+        throw new Error("Cartes 持久化牌桌資料不完整。");
+      }
+      if (!Array.isArray(saved.seats) || !Array.isArray(saved.agentSessions)) {
+        throw new Error("Cartes 持久化座位資料不完整。");
+      }
+      const seats = (saved.seats as Array<Record<string, unknown>>).map((seat) => ({
+        id: String(seat.id),
+        kind: seat.kind as SeatKind,
+        name: String(seat.name),
+        cards: (seat.cards as string[]).map(parseCard),
+        status: seat.status as SeatStatus,
+        result: (seat.result ?? null) as SeatResult | null,
+        records: seat.records as Seat["records"],
+        principalId: typeof seat.principalId === "string" ? seat.principalId : null,
+      }));
+      const table: Table = {
+        id: saved.id,
+        joinCode: saved.joinCode,
+        humanTokenHash: saved.humanTokenHash,
+        mode: saved.mode as GameMode,
+        phase: saved.phase as TablePhase,
+        version: Number(saved.version),
+        round: Number(saved.round),
+        deck: (saved.deck as string[]).map(parseCard),
+        dealerCards: (saved.dealerCards as string[]).map(parseCard),
+        holeRevealed: Boolean(saved.holeRevealed),
+        activeSeatId: typeof saved.activeSeatId === "string" ? saved.activeSeatId : null,
+        seats,
+        agentSessions: new Map(
+          (saved.agentSessions as AgentSession[]).map((session) => [session.tokenHash, { ...session }]),
+        ),
+        events: structuredClone((saved.events ?? []) as TableEvent[]),
+        chat: structuredClone((saved.chat ?? []) as PublicChatMessage[]),
+        nextEventId: Number(saved.nextEventId),
+        receipts: new Map(structuredClone((saved.receipts ?? []) as [string, Receipt<unknown>][])),
+        waiters: new Map(),
+        reconnectTickets: new Map(
+          ((saved.reconnectTickets ?? []) as [string, ReconnectTicket][]).filter(
+            ([, ticket]) => ticket.expiresAtMs > Date.now(),
+          ),
+        ),
+      };
+      this.#tables.set(table.id, table);
+      this.#joinCodes.set(table.joinCode, table.id);
+      this.#humanTokens.set(table.humanTokenHash, table.id);
+      for (const [tokenHash] of table.agentSessions) this.#agentTokens.set(tokenHash, table.id);
+      for (const seat of table.seats) {
+        if (seat.principalId) this.#principalSeats.set(seat.principalId, { tableId: table.id, seatId: seat.id });
+      }
+    }
+    for (const [tokenHash, departure] of snapshot.departedAgentTokens ?? []) {
+      this.#departedAgentTokens.set(tokenHash, structuredClone(departure));
+    }
+  }
 }
 
 function capabilityToken(): string {
   return randomBytes(32).toString("base64url");
+}
+
+function capabilityHash(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function normalizePrincipal(value: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 500) throw new Error("遠端 MCP 身分無效。");
+  return normalized;
 }
 
 function normalizeName(value: string, fallback: string): string {

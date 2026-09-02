@@ -1,7 +1,22 @@
 import type { GameAction } from "./game.js";
 import type { AgentEventResult, AgentJoinResult, AgentLeaveResult, PublicTableView } from "./multiplayer-store.js";
 
-export class CartesHostClient {
+export interface CartesAgentHost {
+  joinAgent(joinCode: string, agentName: string): Promise<AgentJoinResult>;
+  rejoinAgent(joinCode: string, agentName: string, reconnectCode: string): Promise<AgentJoinResult>;
+  getAgentView(agentToken: string): Promise<PublicTableView>;
+  leaveAgent(agentToken: string): Promise<AgentLeaveResult>;
+  agentAction(
+    agentToken: string,
+    action: GameAction,
+    expectedVersion: number,
+    idempotencyKey: string,
+  ): Promise<PublicTableView>;
+  agentSay(agentToken: string, message: string, idempotencyKey: string): Promise<PublicTableView>;
+  waitForEvents(agentToken: string, timeoutMs: number): Promise<AgentEventResult>;
+}
+
+export class CartesHostClient implements CartesAgentHost {
   readonly #baseUrl: string;
   readonly #fetch: typeof fetch;
 
