@@ -56,17 +56,31 @@ legend { margin-bottom: 8px; font-weight: 700; }
 .mode-choice { display: flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 12px; padding: 9px 13px; background: #fff; }
 .mode-choice input { width: auto; }
 
-.primary-button, .secondary-button, .ghost-button { border: 0; border-radius: 13px; padding: 11px 17px; font-weight: 800; transition: transform .16s ease, box-shadow .16s ease; }
+.primary-button, .secondary-button, .ghost-button, .danger-button { border: 0; border-radius: 13px; padding: 11px 17px; font-weight: 800; text-decoration: none; transition: transform .16s ease, box-shadow .16s ease; }
 .primary-button { color: #fff; background: var(--orange); box-shadow: 0 8px 20px rgba(165,72,33,.22); }
 .secondary-button { color: #fff; background: var(--green); }
 .ghost-button { color: var(--orange-dark); background: rgba(217,111,50,.1); }
-.primary-button:not(:disabled):hover, .secondary-button:not(:disabled):hover, .ghost-button:not(:disabled):hover { transform: translateY(-1px); }
+.danger-button { color: #fff; background: #a33e32; }
+.primary-button:not(:disabled):hover, .secondary-button:not(:disabled):hover, .ghost-button:not(:disabled):hover, .danger-button:not(:disabled):hover { transform: translateY(-1px); }
+
+.management-panel { margin-top: 22px; border: 1px solid var(--line); border-radius: 24px; padding: 22px; background: rgba(255,250,241,.9); box-shadow: 0 12px 32px rgba(58,35,24,.09); }
+.management-hint { color: var(--muted); line-height: 1.6; }
+.management-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.management-card { display: grid; gap: 14px; border: 1px solid var(--line); border-radius: 17px; padding: 16px; background: #fff; }
+.management-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.management-card-heading strong { display: block; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 1.25rem; letter-spacing: .1em; }
+.management-card-heading span:not(.count-pill) { display: block; margin-top: 4px; color: var(--muted); font-size: .8rem; }
+.management-players { min-height: 2.8em; margin: 0; color: var(--muted); line-height: 1.5; }
+.management-actions { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+.management-open, .danger-button { font-size: .82rem; }
+.management-unavailable { color: var(--muted); font-size: .78rem; }
 
 .table-layout { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 22px; margin-top: 26px; }
 .table-column { min-width: 0; }
 .invite-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 18px; padding: 14px 18px; background: var(--paper); }
 .invite-card span { display: block; color: var(--muted); font-size: .75rem; }
 .invite-card strong { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 1.6rem; letter-spacing: .12em; }
+.invite-actions { display: flex; gap: 8px; }
 
 .felt-table { position: relative; overflow: hidden; min-height: 650px; padding: clamp(20px, 4vw, 42px); border: 10px solid #70442d; border-radius: 44px; color: #fff; background: radial-gradient(circle at center, #347662 0%, var(--green) 50%, var(--green-dark) 100%); box-shadow: inset 0 0 0 2px rgba(255,255,255,.13), var(--shadow); }
 .felt-table::after { content: ""; position: absolute; inset: 18px; pointer-events: none; border: 1px solid rgba(255,255,255,.15); border-radius: 30px; }
@@ -130,6 +144,10 @@ legend { margin-bottom: 8px; font-weight: 700; }
   .connection-badge { display: none; }
   .setup-panel { padding: 22px; }
   .invite-card { align-items: flex-start; flex-direction: column; }
+  .invite-actions { width: 100%; }
+  .invite-actions button { flex: 1; }
+  .management-actions { align-items: stretch; flex-direction: column; }
+  .management-actions > * { text-align: center; }
   .felt-table { min-height: 580px; border-width: 6px; border-radius: 28px; padding: 22px 14px; }
   .playing-card { width: 62px; height: 90px; }
   .side-column { grid-template-columns: 1fr; }

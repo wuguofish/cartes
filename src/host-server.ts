@@ -83,6 +83,15 @@ async function routeRequest(
     sendJson(response, 201, store.createTable(mode, humanName));
     return;
   }
+  if (method === "GET" && url.pathname === "/api/admin/tables") {
+    sendJson(response, 200, { tables: store.listTables() });
+    return;
+  }
+  const managedTableMatch = /^\/api\/admin\/tables\/([^/]+)$/.exec(url.pathname);
+  if (method === "DELETE" && managedTableMatch) {
+    sendJson(response, 200, store.closeTable(decodeURIComponent(managedTableMatch[1]!)));
+    return;
+  }
 
   if (url.pathname.startsWith("/api/human/")) {
     const token = bearerToken(request);

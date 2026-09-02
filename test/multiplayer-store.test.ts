@@ -196,6 +196,36 @@ test("the human can remove an Agent seat and revoke its reconnect ticket", () =>
   assert.equal(store.joinAgent(created.table.join_code, "小葵").table.players.length, 2);
 });
 
+test("management can list and close one table without affecting another table", async () => {
+  const store = new MultiplayerTableStore(() => THREE_SEAT_DECK);
+  const first = store.createTable("blackjack", "A 桌人類");
+  const second = store.createTable("tenhalf", "B 桌人類");
+  const joined = store.joinAgentForPrincipal(first.table.join_code, "小葵", "friend-xiaokui");
+
+  const summaries = store.listTables();
+  assert.equal(summaries.length, 2);
+  assert.deepEqual(
+    summaries.map((table) => table.join_code).sort(),
+    [first.table.join_code, second.table.join_code].sort(),
+  );
+  assert.equal(summaries.find((table) => table.table_id === first.table.table_id)?.player_count, 2);
+  assertPrivateStateAbsent(summaries, THREE_SEAT_DECK);
+
+  const waiting = store.waitForAgentEvents(joined.agent_token, 2_000);
+  const closed = store.closeTable(first.table.table_id);
+  assert.equal(closed.closed, true);
+  assert.equal(closed.table.join_code, first.table.join_code);
+  assert.equal((await waiting).timed_out, true, "closing a table releases pending long polls");
+  assert.throws(() => store.getHumanView(first.human_token), /憑證無效/);
+  assert.throws(() => store.getAgentView(joined.agent_token), /憑證無效/);
+  assert.throws(() => store.joinAgent(first.table.join_code, "阿宇"), /找不到這組邀請碼/);
+
+  const moved = store.joinAgentForPrincipal(second.table.join_code, "小葵", "friend-xiaokui");
+  assert.equal(moved.table.table_id, second.table.table_id, "closing releases the remote principal for another table");
+  assert.equal(store.getHumanView(second.human_token).join_code, second.table.join_code);
+  assert.deepEqual(store.listTables().map((table) => table.table_id), [second.table.table_id]);
+});
+
 function assertPrivateStateAbsent(value: unknown, forbiddenCards: string[]): void {
   const serialized = JSON.stringify(value);
   assert.equal(serialized.includes('"deck"'), false);

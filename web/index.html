@@ -29,7 +29,7 @@
             <input id="humanName" name="humanName" maxlength="80" value="阿童" required />
           </label>
           <label id="remoteAccessLabel" hidden>
-            遠端建桌密碼
+            遠端營運管理密碼
             <input id="remoteAccessKey" name="remoteAccessKey" type="password" minlength="32" autocomplete="current-password" />
           </label>
           <fieldset>
@@ -38,7 +38,20 @@
             <label class="mode-choice"><input type="radio" name="mode" value="tenhalf" /> 十點半</label>
           </fieldset>
           <button class="primary-button" type="submit">建立共桌牌局</button>
+          <button id="refreshTables" class="ghost-button" type="button">重新整理牌桌</button>
         </form>
+      </section>
+
+      <section id="managementPanel" class="management-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">TABLE OPERATIONS</p>
+            <h2>多桌營運台</h2>
+          </div>
+          <span id="managedTableCount" class="count-pill">0 桌</span>
+        </div>
+        <p id="managementHint" class="management-hint">載入後可另開分頁管理不同牌桌；營運台不會顯示暗牌或座位憑證。</p>
+        <div id="managementList" class="management-list"></div>
       </section>
 
       <section id="tablePanel" class="table-layout" hidden>
@@ -48,7 +61,10 @@
               <span>Agent 邀請碼</span>
               <strong id="joinCode">-------</strong>
             </div>
-            <button id="copyInvite" class="ghost-button" type="button">複製邀請詞</button>
+            <div class="invite-actions">
+              <button id="backToTables" class="ghost-button" type="button">所有牌桌</button>
+              <button id="copyInvite" class="ghost-button" type="button">複製邀請詞</button>
+            </div>
           </div>
 
           <div class="felt-table">

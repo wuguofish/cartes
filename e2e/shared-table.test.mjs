@@ -97,14 +97,60 @@ test("a stale human resume token is cleared after the in-memory Host restarts", 
   await page.goto(host.url);
   await page.getByRole("button", { name: "建立共桌牌局" }).click();
   await page.locator("#tablePanel").waitFor({ state: "visible" });
-  assert.equal(await page.evaluate(() => Boolean(localStorage.getItem("cartes_human_token"))), true);
+  assert.equal(await page.evaluate(() => Boolean(localStorage.getItem("cartes_human_tokens_v1"))), true);
 
   await host.close();
   host = await startCartesHost({ port });
   await page.reload();
   await page.locator("#setupPanel").waitFor({ state: "visible" });
   await page.getByText("原本的牌桌已不存在，請重新開桌。", { exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => localStorage.getItem("cartes_human_token")), null);
+  assert.equal(await page.evaluate(() => localStorage.getItem("cartes_human_tokens_v1")), null);
+});
+
+test("one browser profile can create and operate multiple tables in separate tabs", async (context) => {
+  const host = await startCartesHost({ port: 0 });
+  const profileDir = await mkdtemp(join(tmpdir(), "cartes-e2e-multi-table-"));
+  const browserContext = await chromium.launchPersistentContext(profileDir, browserLaunchOptions());
+  const lobby = browserContext.pages()[0] ?? await browserContext.newPage();
+  context.after(async () => {
+    await browserContext.close().catch(() => undefined);
+    await host.close();
+    await rm(profileDir, { recursive: true, force: true });
+  });
+
+  await lobby.goto(host.url);
+  await lobby.getByLabel("你的名字").fill("A 桌人類");
+  await lobby.getByRole("button", { name: "建立共桌牌局" }).click();
+  await lobby.locator("#tablePanel").waitFor({ state: "visible" });
+  const firstCode = (await lobby.locator("#joinCode").innerText()).trim();
+  await lobby.getByRole("button", { name: "所有牌桌" }).click();
+  await lobby.locator("#managementPanel").waitFor({ state: "visible" });
+
+  await lobby.getByLabel("你的名字").fill("B 桌人類");
+  await lobby.getByLabel("十點半").check();
+  await lobby.getByRole("button", { name: "建立共桌牌局" }).click();
+  await lobby.locator("#tablePanel").waitFor({ state: "visible" });
+  const secondCode = (await lobby.locator("#joinCode").innerText()).trim();
+  assert.notEqual(secondCode, firstCode);
+  await lobby.getByRole("button", { name: "所有牌桌" }).click();
+  await lobby.locator(".management-card").first().waitFor();
+  assert.equal(await lobby.locator(".management-card").count(), 2);
+  assert.equal(await lobby.evaluate(() => Object.keys(JSON.parse(localStorage.getItem("cartes_human_tokens_v1") || "{}")).length), 2);
+
+  const firstCard = lobby.locator(".management-card").filter({ hasText: firstCode });
+  const firstHref = await firstCard.getByRole("link", { name: "另開牌桌" }).getAttribute("href");
+  assert.ok(firstHref);
+  const firstTablePage = await browserContext.newPage();
+  await firstTablePage.goto(new URL(firstHref, host.url).toString());
+  await firstTablePage.locator("#tablePanel").waitFor({ state: "visible" });
+  assert.equal((await firstTablePage.locator("#joinCode").innerText()).trim(), firstCode);
+
+  lobby.once("dialog", (dialog) => dialog.accept());
+  await firstCard.getByRole("button", { name: "關閉牌桌" }).click();
+  await lobby.waitForFunction((code) => ![...document.querySelectorAll(".management-card")].some((card) => card.textContent?.includes(code)), firstCode);
+  assert.equal(await lobby.locator(".management-card").count(), 1);
+  assert.equal(await lobby.locator(".management-card").filter({ hasText: secondCode }).count(), 1);
+  await firstTablePage.getByText("原本的牌桌已不存在，請重新開桌。", { exact: true }).waitFor();
 });
 
 test("the remote human resumes after both the browser and encrypted Host restart", async (context) => {
@@ -128,8 +174,8 @@ test("the remote human resumes after both the browser and encrypted Host restart
   });
 
   await page.goto(publicUrl);
-  await page.getByLabel("遠端建桌密碼").waitFor({ state: "visible" });
-  await page.getByLabel("遠端建桌密碼").fill(humanAccessKey);
+  await page.getByLabel("遠端營運管理密碼").waitFor({ state: "visible" });
+  await page.getByLabel("遠端營運管理密碼").fill(humanAccessKey);
   await page.getByRole("button", { name: "建立共桌牌局" }).click();
   await page.locator("#tablePanel").waitFor({ state: "visible" });
   const joinCode = (await page.locator("#joinCode").innerText()).trim();
@@ -143,7 +189,7 @@ test("the remote human resumes after both the browser and encrypted Host restart
   await page.goto(publicUrl);
   await page.locator("#tablePanel").waitFor({ state: "visible" });
   assert.equal((await page.locator("#joinCode").innerText()).trim(), joinCode);
-  assert.equal(await page.evaluate(() => Boolean(localStorage.getItem("cartes_human_token"))), true);
+  assert.equal(await page.evaluate(() => Boolean(localStorage.getItem("cartes_human_tokens_v1"))), true);
 });
 
 function browserLaunchOptions() {

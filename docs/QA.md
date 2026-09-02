@@ -1,7 +1,7 @@
 # MCP 共桌版驗證報告
 
-驗證日期：2026-09-01
-驗證範圍：`feat/remote-mcp` 本機 STDIO、Streamable HTTP Remote MCP、加密持久化、人類 UI 與多 Agent 共桌
+驗證日期：2026-09-02
+驗證範圍：`feat/multi-table-admin` 本機 STDIO、Streamable HTTP Remote MCP、加密持久化、多桌營運台、人類 UI 與多 Agent 共桌
 
 ## 結論
 
@@ -24,8 +24,8 @@ docker build -t cartes-remote:test .
 
 結果：
 
-- 26 個 Node 測試全部通過；
-- 3 個真實無頭 Chrome E2E 測試通過；
+- 27 個 Node 測試全部通過；
+- 4 個真實無頭 Chrome E2E 測試通過；
 - TypeScript typecheck 通過；
 - npm audit：0 vulnerabilities；
 - `git diff --check` 通過；
@@ -44,6 +44,14 @@ docker build -t cartes-remote:test .
 - server log 未輸出測試用 Bearer token、人類建桌密碼或狀態加密金鑰。
 
 測試容器已在驗證後停止並由 `--rm` 自動刪除；本機僅保留 `cartes-remote:test` image 供後續重測。
+
+## 多桌與 Compose 開關測試
+
+多桌 store／HTTP／Remote 測試同時建立兩張不同模式的牌桌，確認管理列表不含 `deck` 或手牌、關閉 A 桌會撤銷該桌人類與 Agent token、喚醒 pending long poll 並釋放 Remote principal，而 B 桌可繼續操作。未帶營運管理密碼的 Remote 管理 API 回 `401`。
+
+第三條真實 Chrome E2E 在同一瀏覽器設定檔連續建立兩桌，確認兩組人類 capability 依 table ID 保存、營運台同時顯示兩桌、A 桌能另開分頁且仍是原座位。從營運台關閉 A 桌後，A 桌分頁收到憑證失效並回到營運台，B 桌仍保留。
+
+另以 `compose.remote.yml` 與 PowerShell 開關跑實際 Docker lifecycle：容器以 read-only root filesystem、`cap_drop: ALL`、`no-new-privileges`、512 MB 上限與 host loopback port 啟動並通過 healthcheck；建立一桌後執行停止腳本，確認容器與 network 移除而 volume 保留。再次以 `-NoBuild` 啟動後，原人類 token、table ID 與邀請碼均恢復；最終停止並清除隔離測試 volume。
 
 ## 規則對拍
 
@@ -123,7 +131,7 @@ docker build -t cartes-remote:test .
 
 第二條瀏覽器 E2E 會在 UI 已保存人類 token 後重啟同一連接埠的 Host。因記憶體牌桌已不存在，頁面重新整理後必須回到建桌畫面、顯示原桌已不存在，並從 `localStorage` 清除失效 token。
 
-第三條瀏覽器 E2E 使用 Remote 模式的建桌密碼與加密狀態檔，先由真正 Chrome UI 建桌，再同時關閉整個瀏覽器與 Remote Host。以同一公開來源、瀏覽器 profile、狀態檔與金鑰重啟後，人類必須自動回到相同邀請碼的牌桌，證明 Remote 人類續桌不只停留在 store 單元測試。
+第四條瀏覽器 E2E 使用 Remote 模式的營運管理密碼與加密狀態檔，先由真正 Chrome UI 建桌，再同時關閉整個瀏覽器與 Remote Host。以同一公開來源、瀏覽器 profile、狀態檔與金鑰重啟後，人類必須自動回到相同邀請碼的牌桌，證明 Remote 人類續桌不只停留在 store 單元測試。
 
 ## 第二局續接測試
 

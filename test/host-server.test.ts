@@ -21,6 +21,22 @@ test("HTTP host serves the human UI and shares one authority with Agent clients"
     method: "POST",
     body: { mode: "blackjack", human_name: "阿童" },
   });
+  const other = await request<HumanTableResult>(host.url, "/api/tables", {
+    method: "POST",
+    body: { mode: "tenhalf", human_name: "隔壁桌" },
+  });
+  const managed = await fetch(`${host.url}/api/admin/tables`);
+  assert.equal(managed.status, 200);
+  const managedPayload = await managed.json() as { tables: Array<{ table_id: string; join_code: string }> };
+  assert.equal(managedPayload.tables.length, 2);
+  assert.equal(JSON.stringify(managedPayload).includes('"deck"'), false);
+  const closed = await fetch(`${host.url}/api/admin/tables/${other.table.table_id}`, { method: "DELETE" });
+  assert.equal(closed.status, 200);
+  assert.equal((await closed.json() as { closed: boolean }).closed, true);
+  const closedHuman = await fetch(`${host.url}/api/human/table`, {
+    headers: { Authorization: `Bearer ${other.human_token}` },
+  });
+  assert.equal(closedHuman.status, 401);
   const agent = new CartesHostClient(host.url);
   const joined = await agent.joinAgent(created.table.join_code, "小葵");
   assert.equal(joined.table.players.length, 2);

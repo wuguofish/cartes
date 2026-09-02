@@ -11,7 +11,8 @@
 - 人類誤關分頁或瀏覽器後，用同一個瀏覽器重新開啟頁面會自動回到原桌；
 - `leave_table` 永久離桌與人類 UI「移除」功能，進行中離桌也會自動交棒，不會卡住牌局；
 - optimistic concurrency、冪等寫入、獨立事件游標與多層暗牌洩漏測試；
-- 本機 STDIO 零帳號快速開桌，或 Remote MCP 的身分綁定、加密持久化與 Host 重啟續桌。
+- 本機 STDIO 零帳號快速開桌，或 Remote MCP 的身分綁定、加密持久化與 Host 重啟續桌；
+- 同一 Host 可同時開多桌，營運台能另開分頁、查看座位與安全關桌，但不會顯示暗牌或憑證。
 
 ## 五分鐘本機開桌
 
@@ -42,13 +43,13 @@ claude mcp add --transport stdio --scope user cartes -- node D:\絕對路徑\car
 
 重啟 MCP client 後，在人類 UI 按「複製邀請詞」交給 Agent 即可。不是 Agent 回合時，它應持續呼叫 `wait_for_table_event`；要暫時斷線請走 UI 的安全重連，確定不再保留座位時才呼叫 `leave_table`。
 
-人類座位憑證會保存在 `http://127.0.0.1:3210` 這個瀏覽器來源的 `localStorage`。誤關分頁或整個瀏覽器後，只要 Host 沒有停止，用同一個瀏覽器重開網址就會自動回桌；Host 若已重啟，舊憑證會自動清除並回到建桌畫面。共用電腦上的其他使用者若能開啟同一個瀏覽器設定檔，也會取得該人類座位，使用完畢請關閉 Host 或清除該網站資料。
+人類座位憑證會依 table ID 保存在 `http://127.0.0.1:3210` 這個瀏覽器來源的 `localStorage`。同一個瀏覽器設定檔可建立多桌，再從營運台把不同牌桌另開分頁。誤關分頁或整個瀏覽器後，只要 Host 沒有停止，用同一個瀏覽器重開網址就能回桌；Host 若已重啟，失效憑證會自動清除。共用電腦上的其他使用者若能開啟同一個瀏覽器設定檔，也能取得這些人類座位，使用完畢請關閉 Host 或清除該網站資料。
 
 ## 自行架設 Remote MCP
 
 Remote 模式和本機 STDIO 共用同一套遊戲核心與雙盲視角，但多了 Streamable HTTP、逐請求身分驗證、呼叫者座位綁定，以及 AES-256-GCM 加密狀態檔。服務重啟後，人類可用原瀏覽器座位憑證回桌；Agent 用同一 Bearer／OAuth 身分再次呼叫 `join_table`，會接回原座位。
 
-正式部署必須放在 HTTPS reverse proxy 後方。先執行 `npm run generate:remote-secrets -- xiaokui` 產生狀態金鑰、人類建桌密碼與 Agent token，把輸出的 Agent JSON 存成不進版控的 `data/remote-keys.json`，再設定：
+正式部署必須放在 HTTPS reverse proxy 後方。先執行 `npm run generate:remote-secrets -- friend-1 friend-2 friend-3 friend-4` 產生狀態金鑰、營運管理密碼與每位朋友獨立的 Agent token，把輸出的 Agent JSON 存成不進版控的 `data/remote-keys.json`，再設定：
 
 ```powershell
 $env:CARTES_PUBLIC_URL="https://cartes.example.com"
@@ -57,6 +58,26 @@ $env:CARTES_HUMAN_ACCESS_KEY="產生的人類建桌密碼"
 $env:CARTES_REMOTE_KEYS_FILE="$PWD\data\remote-keys.json"
 npm run start:remote
 ```
+
+### 家用電腦＋Cloudflare Tunnel 開關
+
+Repo 另附 `compose.remote.yml`，預設只映射 `127.0.0.1:3210`，不直接開放 LAN／Internet。將 `.env.remote.example` 複製成不進版控的 `.env.remote`，填入 Cloudflare Tunnel 的固定 HTTPS URL 與剛產生的 secrets；Tunnel 的 service URL 指向 `http://localhost:3210`。
+
+約牌時啟動：
+
+```powershell
+.\scripts\Start-CartesRemote.ps1
+```
+
+牌局結束後關閉：
+
+```powershell
+.\scripts\Stop-CartesRemote.ps1
+```
+
+啟動腳本會檢查 Docker daemon、HTTPS URL、管理密碼與每位朋友不同的 Bearer token，然後等到容器 healthcheck 通過。停止腳本執行 `docker compose down`，移除容器與 network，但刻意不傳 `--volumes`，所以 AES 加密牌桌會留在 `cartes-remote_cartes-state` volume；平常也不會留下含環境 secrets 的 stopped container。Compose 設定 `restart: "no"`，Docker Desktop 重啟後不會自己把牌桌服務打開。
+
+Remote 營運管理密碼只存在目前頁面的密碼欄，不寫入 `localStorage`。營運台可列出、另開與關閉多桌；關桌會立即撤銷該桌全部人類／Agent 座位。每位朋友必須使用自己的 Bearer token，同一個身分同時只能占一桌，永久 `leave_table` 或由營運台關桌後才能換桌。
 
 Codex 使用靜態 Bearer token：
 
