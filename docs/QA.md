@@ -30,6 +30,7 @@ docker build -t cartes-remote:test .
 - npm audit：0 vulnerabilities；
 - `git diff --check` 通過；
 - Docker image build 通過，實際容器 smoke test 亦通過。
+- 官方 Skottie viewer 的第 0、39、77 幀視覺檢查通過；Cartes 桌面與 390px 行動版結算花彩無裁切，瀏覽器 console 無 CSP 或 runtime 錯誤。
 
 ## Docker Remote MCP smoke test
 
@@ -132,6 +133,8 @@ docker build -t cartes-remote:test .
 第二條瀏覽器 E2E 會在 UI 已保存人類 token 後重啟同一連接埠的 Host。因記憶體牌桌已不存在，頁面重新整理後必須回到建桌畫面、顯示原桌已不存在，並從 `localStorage` 清除失效 token。
 
 第四條瀏覽器 E2E 使用 Remote 模式的營運管理密碼與加密狀態檔，先由真正 Chrome UI 建桌，再同時關閉整個瀏覽器與 Remote Host。以同一公開來源、瀏覽器 profile、狀態檔與金鑰重啟後，人類必須自動回到相同邀請碼的牌桌，證明 Remote 人類續桌不只停留在 store 單元測試。
+
+第一條 E2E 也會確認新牌具有 `deal-card` 動態、結算時同源 Lottie runtime 真的建立 SVG，並在模擬 `prefers-reduced-motion: reduce` 後立即隱藏花彩。牌桌輪詢若沒有新版本，不會重新觸發新牌或回合動畫。
 
 ## 第二局續接測試
 

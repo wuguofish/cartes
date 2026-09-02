@@ -49,6 +49,12 @@ test("the real browser UI stays usable when Agents leave or are removed", async 
 
   await page.getByRole("button", { name: "開始牌局" }).click();
   await page.getByText("輪到 阿童", { exact: true }).waitFor();
+  await page.locator(".playing-card.dealt").first().waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".playing-card.dealt").first().evaluate((card) => getComputedStyle(card).animationName),
+    "deal-card",
+    "new cards use the functional deal animation",
+  );
   assert.equal(await page.locator('[aria-label="暗牌"]').count(), 1, "the unrevealed dealer card stays hidden");
   await page.getByRole("button", { name: "停牌" }).click();
   await page.getByText("輪到 小葵", { exact: true }).waitFor();
@@ -70,6 +76,11 @@ test("the real browser UI stays usable when Agents leave or are removed", async 
   );
   assert.equal(ended.phase, "ended");
   await page.getByText("本局結束，可以再開一局", { exact: true }).waitFor();
+  await page.locator("#roundCelebration.is-visible").waitFor({ state: "visible" });
+  await page.locator("#roundCelebrationAnimation svg").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#roundCelebrationAnimation svg").count(), 1, "the local Lottie renderer draws the result flourish");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.locator("#roundCelebration").waitFor({ state: "hidden" });
 
   const returned = await firstClient.joinAgent(joinCode, "小葵");
   assert.notEqual(returned.table.viewer_seat_id, departure.seat_id);

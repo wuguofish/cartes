@@ -16,6 +16,15 @@ test("HTTP host serves the human UI and shares one authority with Agent clients"
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Cartes 共桌牌局/);
   assert.match(page.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+  const lottieRuntime = await fetch(`${host.url}/vendor/lottie-light.min.js`);
+  assert.equal(lottieRuntime.status, 200);
+  assert.match(lottieRuntime.headers.get("content-type") ?? "", /text\/javascript/);
+  const roundAnimation = await fetch(`${host.url}/animations/round-complete.json`);
+  assert.equal(roundAnimation.status, 200);
+  assert.match(roundAnimation.headers.get("content-type") ?? "", /application\/json/);
+  const roundAnimationData = await roundAnimation.json() as { nm?: string; slots?: Record<string, unknown> };
+  assert.equal(roundAnimationData.nm, "Cartes round complete flourish");
+  assert.equal(Boolean(roundAnimationData.slots?.bgColor), true, "the Lottie exposes an editable background color");
 
   const created = await request<HumanTableResult>(host.url, "/api/tables", {
     method: "POST",

@@ -224,6 +224,8 @@ function staticAsset(pathname: string): string | null {
   if (pathname === "/" || pathname === "/index.html") return "index.html";
   if (pathname === "/app.js") return "app.js";
   if (pathname === "/styles.css") return "styles.css";
+  if (pathname === "/vendor/lottie-light.min.js") return "vendor/lottie-light.min.js";
+  if (pathname === "/animations/round-complete.json") return "animations/round-complete.json";
   return null;
 }
 
@@ -309,5 +311,6 @@ function contentType(filename: string): string {
   const extension = extname(filename);
   if (extension === ".js") return "text/javascript; charset=utf-8";
   if (extension === ".css") return "text/css; charset=utf-8";
+  if (extension === ".json") return "application/json; charset=utf-8";
   return "text/html; charset=utf-8";
 }

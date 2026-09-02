@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Cartes 共桌牌局</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/vendor/lottie-light.min.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -79,9 +80,14 @@
               <div id="dealerCards" class="cards" aria-label="莊家手牌"></div>
             </div>
 
-            <div class="table-status">
+            <div id="tableStatus" class="table-status">
               <span id="roundLabel">等待開局</span>
               <strong id="turnLabel">Agent 入座後即可開始</strong>
+            </div>
+
+            <div id="roundCelebration" class="round-celebration" aria-hidden="true" hidden>
+              <div id="roundCelebrationAnimation" class="round-celebration-animation"></div>
+              <strong id="roundCelebrationLabel" class="round-celebration-label">本局結束</strong>
             </div>
 
             <div id="playerSeats" class="player-grid"></div>

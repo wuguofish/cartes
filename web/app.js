@@ -17,6 +17,9 @@
     busy: false,
     remote: false,
   };
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let roundAnimation = null;
+  let celebrationTimer = null;
   sessionStorage.removeItem(LEGACY_TOKEN_KEY);
   const elements = Object.fromEntries(
     [
@@ -24,6 +27,7 @@
       "dealerPoints", "dealerCards", "roundLabel", "turnLabel", "playerSeats", "startRound", "hit", "stand",
       "seatCount", "roster", "chatLog", "chatForm", "chatInput", "statusLine", "remoteAccessLabel", "remoteAccessKey",
       "managementPanel", "managementList", "managedTableCount", "managementHint", "refreshTables", "backToTables",
+      "tableStatus", "roundCelebration", "roundCelebrationAnimation", "roundCelebrationLabel",
     ].map((id) => [id, document.getElementById(id)]),
   );
 
@@ -196,6 +200,7 @@
   }
 
   function setTable(table) {
+    const previousTable = state.table;
     if (!state.tableId || state.tableId !== table.table_id) {
       state.tableId = table.table_id;
       if (state.token) rememberHumanToken(table.table_id, state.token);
@@ -219,11 +224,16 @@
           ? `輪到 ${active.name}`
           : "莊家結算中";
 
-    renderDealer(table);
-    renderPlayers(table);
+    renderDealer(table, previousTable);
+    renderPlayers(table, previousTable);
     renderRoster(table);
     renderChat(table);
+    animateTableUpdate(previousTable, table);
 
+    syncActionButtons(table);
+  }
+
+  function syncActionButtons(table) {
     elements.startRound.hidden = !table.legal_actions.includes("start_round");
     elements.hit.hidden = table.phase !== "player_turns";
     elements.stand.hidden = table.phase !== "player_turns";
@@ -238,6 +248,7 @@
     state.table = null;
     state.tableId = "";
     state.token = "";
+    hideRoundCelebration();
     const url = new URL(window.location.href);
     url.searchParams.delete("table");
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
@@ -285,17 +296,27 @@
     else localStorage.removeItem(TOKENS_KEY);
   }
 
-  function renderDealer(table) {
-    const cards = table.dealer.cards.map(cardElement);
-    if (!table.dealer.hole_revealed && table.phase === "player_turns") cards.push(hiddenCard());
+  function renderDealer(table, previousTable) {
+    const previousCount = previousTable?.round === table.round ? previousTable.dealer.cards.length : 0;
+    const shouldAnimate = Boolean(previousTable && previousTable.version !== table.version);
+    const cards = table.dealer.cards.map((code, index) => cardElement(
+      code,
+      shouldAnimate && index >= previousCount ? index - previousCount : -1,
+    ));
+    if (!table.dealer.hole_revealed && table.phase === "player_turns") {
+      const hiddenIsNew = Boolean(previousTable && previousTable.phase !== "player_turns");
+      cards.push(hiddenCard(hiddenIsNew ? table.dealer.cards.length : -1));
+    }
     elements.dealerCards.replaceChildren(...cards);
     elements.dealerPoints.textContent = table.dealer.points === null ? "蓋牌" : `${table.dealer.points} 點`;
   }
 
-  function renderPlayers(table) {
+  function renderPlayers(table, previousTable) {
     elements.playerSeats.replaceChildren(...table.players.map((seat) => {
       const article = document.createElement("article");
-      article.className = `player-seat${seat.seat_id === table.active_seat_id ? " active" : ""}${seat.is_you ? " yours" : ""}`;
+      const active = seat.seat_id === table.active_seat_id;
+      const turnEntered = active && previousTable && previousTable.active_seat_id !== table.active_seat_id;
+      article.className = `player-seat${active ? " active" : ""}${seat.is_you ? " yours" : ""}${turnEntered ? " turn-enter" : ""}`;
       const heading = document.createElement("div");
       heading.className = "seat-heading";
       const name = document.createElement("strong");
@@ -305,7 +326,15 @@
       heading.append(name, points);
       const cards = document.createElement("div");
       cards.className = "cards compact";
-      cards.replaceChildren(...seat.cards.map(cardElement));
+      const previousSeat = previousTable?.round === table.round
+        ? previousTable.players.find((candidate) => candidate.seat_id === seat.seat_id)
+        : null;
+      const previousCount = previousSeat?.cards.length ?? 0;
+      const shouldAnimate = Boolean(previousTable && previousTable.version !== table.version);
+      cards.replaceChildren(...seat.cards.map((code, index) => cardElement(
+        code,
+        shouldAnimate && index >= previousCount ? index - previousCount : -1,
+      )));
       const result = document.createElement("p");
       result.className = "seat-result";
       result.textContent = resultText(seat);
@@ -389,10 +418,14 @@
     if (nearBottom) elements.chatLog.scrollTop = elements.chatLog.scrollHeight;
   }
 
-  function cardElement(code) {
+  function cardElement(code, dealOrder = -1) {
     const card = document.createElement("div");
     const suit = code.slice(0, 1);
     card.className = `playing-card${suit === "♥" || suit === "♦" ? " red" : ""}`;
+    if (dealOrder >= 0) {
+      card.classList.add("dealt");
+      card.style.setProperty("--deal-order", String(Math.min(dealOrder, 6)));
+    }
     const rank = document.createElement("strong");
     rank.textContent = code.slice(1);
     const mark = document.createElement("span");
@@ -401,9 +434,13 @@
     return card;
   }
 
-  function hiddenCard() {
+  function hiddenCard(dealOrder = -1) {
     const card = document.createElement("div");
     card.className = "playing-card hidden-card";
+    if (dealOrder >= 0) {
+      card.classList.add("dealt");
+      card.style.setProperty("--deal-order", String(Math.min(dealOrder, 6)));
+    }
     card.setAttribute("aria-label", "暗牌");
     return card;
   }
@@ -415,6 +452,54 @@
       return "本局平手";
     }
     return ({ active: "正在行動", waiting: "等待回合", stood: "已停牌", bust: "爆牌" })[seat.status] || "";
+  }
+
+  function animateTableUpdate(previousTable, table) {
+    if (!previousTable) return;
+    if (previousTable.active_seat_id !== table.active_seat_id && table.active_seat_id) {
+      elements.tableStatus.classList.remove("turn-shift");
+      void elements.tableStatus.offsetWidth;
+      elements.tableStatus.classList.add("turn-shift");
+    }
+    if (table.phase !== "ended") {
+      hideRoundCelebration();
+      return;
+    }
+    if (previousTable.phase !== "ended") playRoundCelebration(table);
+  }
+
+  function playRoundCelebration(table) {
+    if (reducedMotion.matches || !window.lottie) return;
+    const you = table.players.find((seat) => seat.is_you);
+    elements.roundCelebrationLabel.textContent = you?.result?.outcome === "player"
+      ? "漂亮，這局是你的！"
+      : you?.result?.outcome === "push"
+        ? "旗鼓相當，這局平手"
+        : "本局結束，再接再厲";
+    clearTimeout(celebrationTimer);
+    elements.roundCelebration.hidden = false;
+    requestAnimationFrame(() => elements.roundCelebration.classList.add("is-visible"));
+    if (!roundAnimation) {
+      roundAnimation = window.lottie.loadAnimation({
+        container: elements.roundCelebrationAnimation,
+        renderer: "svg",
+        loop: false,
+        autoplay: true,
+        path: "/animations/round-complete.json",
+        rendererSettings: { preserveAspectRatio: "xMidYMid meet", progressiveLoad: true },
+      });
+    } else {
+      roundAnimation.goToAndPlay(0, true);
+    }
+    celebrationTimer = setTimeout(hideRoundCelebration, 1800);
+  }
+
+  function hideRoundCelebration() {
+    clearTimeout(celebrationTimer);
+    celebrationTimer = null;
+    elements.roundCelebration.classList.remove("is-visible");
+    elements.roundCelebration.hidden = true;
+    roundAnimation?.stop();
   }
 
   async function api(path, options) {
@@ -439,14 +524,14 @@
   async function run(operation) {
     if (state.busy) return;
     state.busy = true;
-    if (state.table) setTable(state.table);
+    if (state.table) syncActionButtons(state.table);
     try {
       await operation();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), true);
     } finally {
       state.busy = false;
-      if (state.table) setTable(state.table);
+      if (state.table) syncActionButtons(state.table);
     }
   }
 
@@ -496,4 +581,7 @@
   } else {
     showManagement();
   }
+  reducedMotion.addEventListener("change", (event) => {
+    if (event.matches) hideRoundCelebration();
+  });
 })();
