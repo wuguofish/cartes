@@ -60,7 +60,7 @@ export class RemoteMcpGateway {
   async handle(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
     const url = new URL(request.url ?? "/", this.#publicUrl);
     if (request.method === "GET" && url.pathname === "/api/remote-config") {
-      sendJson(response, 200, { remote: true, human_access_key_required: true });
+      sendJson(response, 200, { remote: true, human_access_key_required: true, table_management: true });
       return true;
     }
     if (request.method === "GET" && url.pathname === "/api/remote-health") {
@@ -73,10 +73,13 @@ export class RemoteMcpGateway {
       });
       return true;
     }
-    if (request.method === "POST" && url.pathname === "/api/tables") {
+    if (
+      (request.method === "POST" && url.pathname === "/api/tables") ||
+      url.pathname.startsWith("/api/admin/")
+    ) {
       const humanKey = singleHeader(request.headers["x-cartes-human-key"]);
       if (!humanKey || !safeSecretEqual(humanKey, this.#humanAccessKeyHash)) {
-        sendJson(response, 401, { error: "遠端建桌密碼不正確。" });
+        sendJson(response, 401, { error: "遠端營運管理密碼不正確。" });
         return true;
       }
       return false;

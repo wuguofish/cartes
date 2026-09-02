@@ -17,7 +17,7 @@ Remote Streamable HTTP MCP ─┘       ├─ 本機：記憶體
 - `cartes-host` 是唯一牌局權威，持有牌堆、莊家暗牌與所有座位狀態。
 - 本機模式由每個 MCP client 啟動自己的 `cartes-mcp` STDIO process；該 process 只在記憶體持有自己座位的 capability token。
 - Remote 模式逐次驗證 Bearer／OAuth token，並把驗證後的 caller principal 綁定座位；不同 principal 不能接管彼此的 MCP session 或座位。
-- 人類在 UI 建立牌桌並取得邀請碼。Agent 只能用邀請碼入座，無法列舉其他牌桌。
+- 人類在 UI 建立牌桌並取得邀請碼。受管理密碼保護的營運台可以管理多桌；Agent 仍只能用邀請碼入座，無法列舉其他牌桌。
 - 人類負責開局；之後依入座順序逐家行動，全部停牌或爆牌後由莊家自動結算。
 - 本機 Host 的牌桌只存在記憶體；Remote Host 使用 AES-256-GCM 加密快照，Host 重啟後可恢復牌桌、回合、事件游標與憑證雜湊。
 
@@ -66,7 +66,7 @@ Remote 模式由 `npm run start:remote` 啟動同一套人類 UI、Host API 與 
 
 - `CARTES_PUBLIC_URL`：外部使用者實際連線的固定 URL，正式環境必須是 HTTPS；
 - `CARTES_STATE_KEY`：32 bytes Base64URL 金鑰，用來加密完整牌桌狀態；
-- `CARTES_HUMAN_ACCESS_KEY`：至少 32 字元，只有持有者能建立新桌；
+- `CARTES_HUMAN_ACCESS_KEY`：至少 32 字元，只有持有者能建立、列出與關閉牌桌；
 - 靜態 Bearer 模式的 `CARTES_REMOTE_KEYS_FILE`（也可用 `CARTES_REMOTE_KEYS_JSON` 注入相同 JSON），或 OIDC 模式的 issuer／audience。
 
 其他環境變數：
@@ -81,7 +81,15 @@ Remote 模式由 `npm run start:remote` 啟動同一套人類 UI、Host API 與 
 | `CARTES_OIDC_REQUIRED_SCOPE` | `cartes:play` | Remote MCP access token 必須具備的 scope |
 | `CARTES_ALLOW_INSECURE_HTTP` | 未設定 | 僅本機 smoke test 設為 `1`；正式環境不可使用 |
 
-可用 `npm run generate:remote-secrets -- agent-name` 產生初始 secrets。每個 Agent 必須分配不同靜態 token；同一 token 代表同一遠端身分，新 MCP session 會安全接回並撤銷舊 session 的座位 capability。靜態 key 檔含有真正的登入秘密，必須放在 `data/` 等不進版控、只有服務帳號可讀的位置。
+可用 `npm run generate:remote-secrets -- friend-1 friend-2 friend-3 friend-4` 一次產生初始 secrets 與多組 Agent tokens。每個 Agent 必須分配不同靜態 token；同一 token 代表同一遠端身分，新 MCP session 會安全接回並撤銷舊 session 的座位 capability。同一 principal 同時只能綁定一張牌桌，離桌或整桌關閉後才可加入另一桌。靜態 key 檔含有真正的登入秘密，必須放在 `data/` 等不進版控、只有服務帳號可讀的位置。
+
+### 多桌營運台
+
+同一個 `MultiplayerTableStore` 可同時持有多張互相隔離的牌桌，每桌仍有獨立邀請碼、牌堆、回合、事件游標與最多八個座位。人類 UI 依 table ID 保存多組 capability token，營運台的「另開牌桌」會用帶 table ID 的 URL 開新分頁，因此兩個分頁不會互相切換座位。
+
+Remote 的 `GET /api/admin/tables` 與 `DELETE /api/admin/tables/:tableId` 必須帶 `X-Cartes-Human-Key`。列表只回傳桌號、模式、階段、回合、玩家名稱與座位數，不含手牌、聊天、牌堆或任何 token。關桌會撤銷人類 token、所有 Agent capability、重連碼與 Remote principal 綁定，並釋放正在等待的 long poll。管理密碼只保留在頁面密碼欄，不寫入瀏覽器持久儲存。
+
+目前每張牌桌仍只有建立者這一個人類座位；其他座位是 MCP Agent。營運台不是觀戰視角，也沒有提供公開桌單，沒有該桌人類 capability 的瀏覽器只能管理或關桌，不能查看牌面或代替玩家操作。
 
 ### OIDC／OAuth
 
@@ -110,6 +118,8 @@ Node process 預設只監聽 loopback，應由 Caddy、nginx、Cloudflare Tunnel
 
 Repo 內附非 root runtime 的 `Dockerfile`；容器部署時將 `/app/data` 掛載到持久 volume、設定 `CARTES_REMOTE_HOST=0.0.0.0`，並由外層 ingress 提供 HTTPS。不要把 secrets 寫進 image layer、Dockerfile 或 compose 檔，應使用部署平台的 secret store／環境注入。
 
+家用 Windows 主機可使用 `compose.remote.yml` 與 `scripts/Start-CartesRemote.ps1`／`Stop-CartesRemote.ps1`。Compose 只把服務映射到 host loopback、移除 Linux capabilities、啟用 read-only root filesystem、限制 512 MB 記憶體且不自動重啟。停止腳本使用 `docker compose down` 移除含 secrets 的容器，但不刪除 `cartes-remote_cartes-state` volume。Cloudflare Tunnel 應指向 host 的 `http://localhost:3210`，不需要把容器 port 對 LAN 開放。
+
 ## Agent 如何知道別家動了
 
 `wait_for_table_event` 是有上限的 long poll，最多等待 25 秒。有人加入、開局、要牌、停牌、爆牌、結算或說話時，Host 會喚醒所有正在等待的 Agent。每位 Agent 的游標互相獨立，因此 Agent A 讀過事件不會讓 Agent B 漏掉。
@@ -130,7 +140,7 @@ Agent instructions 會要求它持續參與後續牌局，直到人類結束測�
 
 ## 人類關閉瀏覽器後續桌
 
-人類 UI 會把自己的 capability token 保存在該頁面來源的 `localStorage`，不使用會跨來源自動傳送的 Cookie。本機模式只要同一個 Host process 還在執行，用同一個瀏覽器設定檔重開網址就會自動回桌；本機 Host 重啟後記憶體牌桌消失，UI 會清除失效 token。Remote 模式則會持久化 token 雜湊與牌桌狀態，因此瀏覽器和 Remote Host 都重啟後仍能回到原桌。
+人類 UI 會依 table ID 把多組 capability token 保存在該頁面來源的 `localStorage`，不使用會跨來源自動傳送的 Cookie。本機模式只要同一個 Host process 還在執行，用同一個瀏覽器設定檔重開網址就能回到各桌；本機 Host 重啟後記憶體牌桌消失，UI 會逐一清除失效 token。Remote 模式則會持久化 token 雜湊與所有牌桌狀態，因此瀏覽器和 Remote Host 都重啟後仍能回桌。
 
 這仍是同一瀏覽器來源的座位恢復，不是跨裝置帳號系統：任何能使用同一個瀏覽器設定檔的人都能接手該人類座位。換瀏覽器、清除網站資料或遺失 token 後，目前無法自行找回原人類座位；共用電腦使用完畢應清除該網站資料。
 
@@ -163,8 +173,8 @@ Agent instructions 會要求它持續參與後續牌局，直到人類結束測�
 
 ## 目前範圍與信任邊界
 
-- 本機單一人類 UI，可邀請最多七個 Agent；
-- 同一時間只支援一個人類座位，沒有旁觀者或真人多人模式；Remote 人類恢復仍綁定同一瀏覽器來源，沒有跨裝置帳號找回；
+- 單一 Host 可同時管理多桌；每桌有一個人類座位，最多邀請七個 Agent；
+- 沒有旁觀者或真人多人模式；Remote 人類恢復仍綁定同一瀏覽器來源，沒有跨裝置帳號找回；
 - Remote 持久化目前是單一 Node process 的加密檔案，不支援多副本同時寫入；
 - OAuth 模式依賴外部 OIDC Authorization Server，本專案不自行簽發 OAuth token；
 - 沒有金錢、籌碼或賭注；

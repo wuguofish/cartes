@@ -114,6 +114,28 @@ export interface HumanTableResult {
   readonly table: PublicTableView;
 }
 
+export interface ManagedTableSummary {
+  readonly table_id: string;
+  readonly join_code: string;
+  readonly mode: GameMode;
+  readonly rule_label: string;
+  readonly phase: TablePhase;
+  readonly round: number;
+  readonly version: number;
+  readonly player_count: number;
+  readonly max_seats: number;
+  readonly human_name: string;
+  readonly active_player_name: string | null;
+  readonly players: Array<{ readonly name: string; readonly kind: SeatKind }>;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+export interface CloseTableResult {
+  readonly closed: true;
+  readonly table: ManagedTableSummary;
+}
+
 export interface AgentEventResult {
   readonly timed_out: boolean;
   readonly events: TableEvent[];
@@ -252,6 +274,33 @@ export class MultiplayerTableStore {
     this.#appendEvent(table, "table_created", humanSeat, `${humanSeat.name} 建立了牌桌。`);
     this.#persist();
     return { human_token: humanToken, table: this.#view(table, humanSeat.id) };
+  }
+
+  listTables(): ManagedTableSummary[] {
+    return [...this.#tables.values()]
+      .map((table) => this.#managedSummary(table))
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+  }
+
+  closeTable(tableId: string): CloseTableResult {
+    const table = this.#requireTable(tableId);
+    const summary = this.#managedSummary(table);
+
+    for (const [tokenHash, waiter] of table.waiters) {
+      const session = table.agentSessions.get(tokenHash);
+      clearTimeout(waiter.timer);
+      table.waiters.delete(tokenHash);
+      if (session) waiter.resolve(this.#eventResult(table, session, [], true));
+    }
+    this.#joinCodes.delete(table.joinCode);
+    this.#humanTokens.delete(table.humanTokenHash);
+    for (const [tokenHash] of table.agentSessions) this.#agentTokens.delete(tokenHash);
+    for (const seat of table.seats) {
+      if (seat.principalId) this.#principalSeats.delete(seat.principalId);
+    }
+    this.#tables.delete(table.id);
+    this.#persist();
+    return { closed: true, table: summary };
   }
 
   joinAgent(joinCode: string, agentName: string): AgentJoinResult {
@@ -734,6 +783,30 @@ export class MultiplayerTableStore {
       legal_actions: legalActions,
       recent_chat: table.chat.slice(-20).map((message) => ({ ...message })),
       last_event_id: table.nextEventId - 1,
+    };
+  }
+
+  #managedSummary(table: Table): ManagedTableSummary {
+    const activeSeat = table.activeSeatId
+      ? table.seats.find((seat) => seat.id === table.activeSeatId) ?? null
+      : null;
+    const createdAt = table.events[0]?.at ?? new Date(0).toISOString();
+    const updatedAt = table.events.at(-1)?.at ?? createdAt;
+    return {
+      table_id: table.id,
+      join_code: table.joinCode,
+      mode: table.mode,
+      rule_label: RULES[table.mode].label,
+      phase: table.phase,
+      round: table.round,
+      version: table.version,
+      player_count: table.seats.length,
+      max_seats: MAX_SEATS,
+      human_name: table.seats[0]!.name,
+      active_player_name: activeSeat?.name ?? null,
+      players: table.seats.map((seat) => ({ name: seat.name, kind: seat.kind })),
+      created_at: createdAt,
+      updated_at: updatedAt,
     };
   }
 

@@ -50,6 +50,15 @@ test("Streamable HTTP authenticates every request and binds one remote caller to
     body: JSON.stringify({ mode: "tenhalf", human_name: "遠端人類" }),
   });
   assert.equal(protectedCreate.status, 201);
+  const unauthorizedManagement = await fetch(`${publicUrl}/api/admin/tables`);
+  assert.equal(unauthorizedManagement.status, 401);
+  const managed = await fetch(`${publicUrl}/api/admin/tables`, {
+    headers: { "X-Cartes-Human-Key": HUMAN_KEY },
+  });
+  assert.equal(managed.status, 200);
+  const managedPayload = await managed.json() as { tables: Array<{ table_id: string }> };
+  assert.equal(managedPayload.tables.length, 2);
+  assert.equal(JSON.stringify(managedPayload).includes('"deck"'), false);
 
   const first = await connectRemote(publicUrl, XIAOKUI_TOKEN, "remote-first");
   context.after(() => first.client.close());

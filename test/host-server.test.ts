@@ -16,11 +16,36 @@ test("HTTP host serves the human UI and shares one authority with Agent clients"
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Cartes 共桌牌局/);
   assert.match(page.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+  const lottieRuntime = await fetch(`${host.url}/vendor/lottie-light.min.js`);
+  assert.equal(lottieRuntime.status, 200);
+  assert.match(lottieRuntime.headers.get("content-type") ?? "", /text\/javascript/);
+  const roundAnimation = await fetch(`${host.url}/animations/round-complete.json`);
+  assert.equal(roundAnimation.status, 200);
+  assert.match(roundAnimation.headers.get("content-type") ?? "", /application\/json/);
+  const roundAnimationData = await roundAnimation.json() as { nm?: string; slots?: Record<string, unknown> };
+  assert.equal(roundAnimationData.nm, "Cartes round complete flourish");
+  assert.equal(Boolean(roundAnimationData.slots?.bgColor), true, "the Lottie exposes an editable background color");
 
   const created = await request<HumanTableResult>(host.url, "/api/tables", {
     method: "POST",
     body: { mode: "blackjack", human_name: "阿童" },
   });
+  const other = await request<HumanTableResult>(host.url, "/api/tables", {
+    method: "POST",
+    body: { mode: "tenhalf", human_name: "隔壁桌" },
+  });
+  const managed = await fetch(`${host.url}/api/admin/tables`);
+  assert.equal(managed.status, 200);
+  const managedPayload = await managed.json() as { tables: Array<{ table_id: string; join_code: string }> };
+  assert.equal(managedPayload.tables.length, 2);
+  assert.equal(JSON.stringify(managedPayload).includes('"deck"'), false);
+  const closed = await fetch(`${host.url}/api/admin/tables/${other.table.table_id}`, { method: "DELETE" });
+  assert.equal(closed.status, 200);
+  assert.equal((await closed.json() as { closed: boolean }).closed, true);
+  const closedHuman = await fetch(`${host.url}/api/human/table`, {
+    headers: { Authorization: `Bearer ${other.human_token}` },
+  });
+  assert.equal(closedHuman.status, 401);
   const agent = new CartesHostClient(host.url);
   const joined = await agent.joinAgent(created.table.join_code, "小葵");
   assert.equal(joined.table.players.length, 2);

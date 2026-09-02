@@ -1,22 +1,33 @@
 (() => {
   "use strict";
 
-  const TOKEN_KEY = "cartes_human_token";
-  const legacyToken = sessionStorage.getItem(TOKEN_KEY) || "";
+  const LEGACY_TOKEN_KEY = "cartes_human_token";
+  const TOKENS_KEY = "cartes_human_tokens_v1";
+  const legacyToken = localStorage.getItem(LEGACY_TOKEN_KEY) || sessionStorage.getItem(LEGACY_TOKEN_KEY) || "";
+  const tokens = readTokenMap();
+  const requestedTableId = new URL(window.location.href).searchParams.get("table") || "";
+  const soleTableId = Object.keys(tokens).length === 1 ? Object.keys(tokens)[0] : "";
+  const initialTableId = requestedTableId && tokens[requestedTableId] ? requestedTableId : soleTableId;
   const state = {
-    token: localStorage.getItem(TOKEN_KEY) || legacyToken,
+    tokens,
+    tableId: initialTableId,
+    token: (initialTableId && tokens[initialTableId]) || legacyToken,
     table: null,
     polling: null,
     busy: false,
     remote: false,
   };
-  if (legacyToken && !localStorage.getItem(TOKEN_KEY)) localStorage.setItem(TOKEN_KEY, legacyToken);
-  sessionStorage.removeItem(TOKEN_KEY);
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let roundAnimation = null;
+  let celebrationTimer = null;
+  sessionStorage.removeItem(LEGACY_TOKEN_KEY);
   const elements = Object.fromEntries(
     [
       "connectionBadge", "setupPanel", "createForm", "humanName", "tablePanel", "joinCode", "copyInvite",
       "dealerPoints", "dealerCards", "roundLabel", "turnLabel", "playerSeats", "startRound", "hit", "stand",
       "seatCount", "roster", "chatLog", "chatForm", "chatInput", "statusLine", "remoteAccessLabel", "remoteAccessKey",
+      "managementPanel", "managementList", "managedTableCount", "managementHint", "refreshTables", "backToTables",
+      "tableStatus", "roundCelebration", "roundCelebrationAnimation", "roundCelebrationLabel",
     ].map((id) => [id, document.getElementById(id)]),
   );
 
@@ -30,12 +41,18 @@
         authenticated: false,
         humanAccess: true,
       });
-      state.token = result.human_token;
-      localStorage.setItem(TOKEN_KEY, state.token);
+      rememberHumanToken(result.table.table_id, result.human_token);
+      selectTable(result.table.table_id, result.human_token);
       setTable(result.table);
       setStatus("牌桌建立完成，把邀請碼交給 Agent 就能入座。");
       startPolling();
     });
+  });
+
+  elements.refreshTables.addEventListener("click", () => void run(loadManagement));
+  elements.backToTables.addEventListener("click", () => {
+    showManagement();
+    void loadManagement().catch((error) => setStatus(error.message, true));
   });
 
   elements.copyInvite.addEventListener("click", async () => {
@@ -62,6 +79,92 @@
       setTable(result.table);
     });
   });
+
+  async function loadManagement() {
+    const result = await api("/api/admin/tables", {
+      method: "GET",
+      authenticated: false,
+      humanAccess: true,
+    });
+    renderManagement(result.tables);
+    setStatus(`已載入 ${result.tables.length} 張牌桌。`);
+  }
+
+  function renderManagement(tables) {
+    elements.managedTableCount.textContent = `${tables.length} 桌`;
+    elements.managementHint.textContent = tables.length
+      ? "每張牌桌可另開分頁；只有保存在這個瀏覽器裡的人類座位能進桌操作。"
+      : "目前沒有牌桌。建立後會在這裡顯示，但不會列出暗牌或任何座位憑證。";
+    elements.managementList.replaceChildren(...tables.map((table) => {
+      const article = document.createElement("article");
+      article.className = "management-card";
+
+      const heading = document.createElement("div");
+      heading.className = "management-card-heading";
+      const title = document.createElement("div");
+      const code = document.createElement("strong");
+      code.textContent = table.join_code;
+      const rule = document.createElement("span");
+      rule.textContent = `${table.rule_label} · ${phaseLabel(table)}`;
+      title.append(code, rule);
+      const count = document.createElement("span");
+      count.className = "count-pill";
+      count.textContent = `${table.player_count}/${table.max_seats}`;
+      heading.append(title, count);
+
+      const players = document.createElement("p");
+      players.className = "management-players";
+      players.textContent = table.players.map((seat) => `${seat.name}${seat.kind === "human" ? "（人類）" : ""}`).join("、");
+
+      const actions = document.createElement("div");
+      actions.className = "management-actions";
+      const token = state.tokens[table.table_id];
+      if (token) {
+        const open = document.createElement("a");
+        open.className = "secondary-button management-open";
+        open.href = tableUrl(table.table_id);
+        open.target = "_blank";
+        open.rel = "noopener";
+        open.textContent = "另開牌桌";
+        actions.append(open);
+      } else {
+        const unavailable = document.createElement("span");
+        unavailable.className = "management-unavailable";
+        unavailable.textContent = "此瀏覽器沒有該桌人類座位";
+        actions.append(unavailable);
+      }
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "danger-button";
+      close.textContent = "關閉牌桌";
+      close.addEventListener("click", () => void closeManagedTable(table));
+      actions.append(close);
+
+      article.append(heading, players, actions);
+      return article;
+    }));
+  }
+
+  async function closeManagedTable(table) {
+    if (!window.confirm(`確定要關閉牌桌 ${table.join_code} 嗎？所有人類與 Agent 座位都會立即失效。`)) return;
+    await run(async () => {
+      await api(`/api/admin/tables/${encodeURIComponent(table.table_id)}`, {
+        method: "DELETE",
+        authenticated: false,
+        humanAccess: true,
+      });
+      forgetHumanToken(table.table_id);
+      if (state.tableId === table.table_id) showManagement();
+      await loadManagement();
+      setStatus(`牌桌 ${table.join_code} 已關閉，所有座位憑證均已撤銷。`);
+    });
+  }
+
+  function phaseLabel(table) {
+    if (table.phase === "lobby") return "等待開局";
+    if (table.phase === "ended") return `第 ${table.round} 局已結束`;
+    return table.active_player_name ? `輪到 ${table.active_player_name}` : "進行中";
+  }
 
   async function gameWrite(path, extra) {
     if (!state.table) return;
@@ -97,10 +200,16 @@
   }
 
   function setTable(table) {
+    const previousTable = state.table;
+    if (!state.tableId || state.tableId !== table.table_id) {
+      state.tableId = table.table_id;
+      if (state.token) rememberHumanToken(table.table_id, state.token);
+    }
     state.table = table;
     elements.setupPanel.hidden = true;
+    elements.managementPanel.hidden = true;
     elements.tablePanel.hidden = false;
-    elements.connectionBadge.textContent = "本機共桌已連線";
+    elements.connectionBadge.textContent = state.remote ? "Remote 共桌已連線" : "本機共桌已連線";
     elements.connectionBadge.classList.add("online");
     elements.joinCode.textContent = table.join_code;
     elements.roundLabel.textContent = table.round ? `第 ${table.round} 局 · ${table.rule_label}` : `${table.rule_label} · 等待開局`;
@@ -115,11 +224,16 @@
           ? `輪到 ${active.name}`
           : "莊家結算中";
 
-    renderDealer(table);
-    renderPlayers(table);
+    renderDealer(table, previousTable);
+    renderPlayers(table, previousTable);
     renderRoster(table);
     renderChat(table);
+    animateTableUpdate(previousTable, table);
 
+    syncActionButtons(table);
+  }
+
+  function syncActionButtons(table) {
     elements.startRound.hidden = !table.legal_actions.includes("start_round");
     elements.hit.hidden = table.phase !== "player_turns";
     elements.stand.hidden = table.phase !== "player_turns";
@@ -128,17 +242,81 @@
     elements.startRound.disabled = state.busy;
   }
 
-  function renderDealer(table) {
-    const cards = table.dealer.cards.map(cardElement);
-    if (!table.dealer.hole_revealed && table.phase === "player_turns") cards.push(hiddenCard());
+  function showManagement() {
+    clearInterval(state.polling);
+    state.polling = null;
+    state.table = null;
+    state.tableId = "";
+    state.token = "";
+    hideRoundCelebration();
+    const url = new URL(window.location.href);
+    url.searchParams.delete("table");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    elements.setupPanel.hidden = false;
+    elements.managementPanel.hidden = false;
+    elements.tablePanel.hidden = true;
+    elements.connectionBadge.textContent = "多桌營運台";
+    elements.connectionBadge.classList.remove("online");
+  }
+
+  function selectTable(tableId, token) {
+    state.tableId = tableId;
+    state.token = token;
+    const url = new URL(window.location.href);
+    url.searchParams.set("table", tableId);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+
+  function tableUrl(tableId) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("table", tableId);
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
+
+  function readTokenMap() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(TOKENS_KEY) || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return Object.fromEntries(Object.entries(parsed).filter(([tableId, token]) => tableId && typeof token === "string" && token));
+    } catch {
+      return {};
+    }
+  }
+
+  function rememberHumanToken(tableId, token) {
+    state.tokens[tableId] = token;
+    localStorage.setItem(TOKENS_KEY, JSON.stringify(state.tokens));
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+    sessionStorage.removeItem(LEGACY_TOKEN_KEY);
+  }
+
+  function forgetHumanToken(tableId) {
+    delete state.tokens[tableId];
+    if (Object.keys(state.tokens).length) localStorage.setItem(TOKENS_KEY, JSON.stringify(state.tokens));
+    else localStorage.removeItem(TOKENS_KEY);
+  }
+
+  function renderDealer(table, previousTable) {
+    const previousCount = previousTable?.round === table.round ? previousTable.dealer.cards.length : 0;
+    const shouldAnimate = Boolean(previousTable && previousTable.version !== table.version);
+    const cards = table.dealer.cards.map((code, index) => cardElement(
+      code,
+      shouldAnimate && index >= previousCount ? index - previousCount : -1,
+    ));
+    if (!table.dealer.hole_revealed && table.phase === "player_turns") {
+      const hiddenIsNew = Boolean(previousTable && previousTable.phase !== "player_turns");
+      cards.push(hiddenCard(hiddenIsNew ? table.dealer.cards.length : -1));
+    }
     elements.dealerCards.replaceChildren(...cards);
     elements.dealerPoints.textContent = table.dealer.points === null ? "蓋牌" : `${table.dealer.points} 點`;
   }
 
-  function renderPlayers(table) {
+  function renderPlayers(table, previousTable) {
     elements.playerSeats.replaceChildren(...table.players.map((seat) => {
       const article = document.createElement("article");
-      article.className = `player-seat${seat.seat_id === table.active_seat_id ? " active" : ""}${seat.is_you ? " yours" : ""}`;
+      const active = seat.seat_id === table.active_seat_id;
+      const turnEntered = active && previousTable && previousTable.active_seat_id !== table.active_seat_id;
+      article.className = `player-seat${active ? " active" : ""}${seat.is_you ? " yours" : ""}${turnEntered ? " turn-enter" : ""}`;
       const heading = document.createElement("div");
       heading.className = "seat-heading";
       const name = document.createElement("strong");
@@ -148,7 +326,15 @@
       heading.append(name, points);
       const cards = document.createElement("div");
       cards.className = "cards compact";
-      cards.replaceChildren(...seat.cards.map(cardElement));
+      const previousSeat = previousTable?.round === table.round
+        ? previousTable.players.find((candidate) => candidate.seat_id === seat.seat_id)
+        : null;
+      const previousCount = previousSeat?.cards.length ?? 0;
+      const shouldAnimate = Boolean(previousTable && previousTable.version !== table.version);
+      cards.replaceChildren(...seat.cards.map((code, index) => cardElement(
+        code,
+        shouldAnimate && index >= previousCount ? index - previousCount : -1,
+      )));
       const result = document.createElement("p");
       result.className = "seat-result";
       result.textContent = resultText(seat);
@@ -232,10 +418,14 @@
     if (nearBottom) elements.chatLog.scrollTop = elements.chatLog.scrollHeight;
   }
 
-  function cardElement(code) {
+  function cardElement(code, dealOrder = -1) {
     const card = document.createElement("div");
     const suit = code.slice(0, 1);
     card.className = `playing-card${suit === "♥" || suit === "♦" ? " red" : ""}`;
+    if (dealOrder >= 0) {
+      card.classList.add("dealt");
+      card.style.setProperty("--deal-order", String(Math.min(dealOrder, 6)));
+    }
     const rank = document.createElement("strong");
     rank.textContent = code.slice(1);
     const mark = document.createElement("span");
@@ -244,9 +434,13 @@
     return card;
   }
 
-  function hiddenCard() {
+  function hiddenCard(dealOrder = -1) {
     const card = document.createElement("div");
     card.className = "playing-card hidden-card";
+    if (dealOrder >= 0) {
+      card.classList.add("dealt");
+      card.style.setProperty("--deal-order", String(Math.min(dealOrder, 6)));
+    }
     card.setAttribute("aria-label", "暗牌");
     return card;
   }
@@ -258,6 +452,54 @@
       return "本局平手";
     }
     return ({ active: "正在行動", waiting: "等待回合", stood: "已停牌", bust: "爆牌" })[seat.status] || "";
+  }
+
+  function animateTableUpdate(previousTable, table) {
+    if (!previousTable) return;
+    if (previousTable.active_seat_id !== table.active_seat_id && table.active_seat_id) {
+      elements.tableStatus.classList.remove("turn-shift");
+      void elements.tableStatus.offsetWidth;
+      elements.tableStatus.classList.add("turn-shift");
+    }
+    if (table.phase !== "ended") {
+      hideRoundCelebration();
+      return;
+    }
+    if (previousTable.phase !== "ended") playRoundCelebration(table);
+  }
+
+  function playRoundCelebration(table) {
+    if (reducedMotion.matches || !window.lottie) return;
+    const you = table.players.find((seat) => seat.is_you);
+    elements.roundCelebrationLabel.textContent = you?.result?.outcome === "player"
+      ? "漂亮，這局是你的！"
+      : you?.result?.outcome === "push"
+        ? "旗鼓相當，這局平手"
+        : "本局結束，再接再厲";
+    clearTimeout(celebrationTimer);
+    elements.roundCelebration.hidden = false;
+    requestAnimationFrame(() => elements.roundCelebration.classList.add("is-visible"));
+    if (!roundAnimation) {
+      roundAnimation = window.lottie.loadAnimation({
+        container: elements.roundCelebrationAnimation,
+        renderer: "svg",
+        loop: false,
+        autoplay: true,
+        path: "/animations/round-complete.json",
+        rendererSettings: { preserveAspectRatio: "xMidYMid meet", progressiveLoad: true },
+      });
+    } else {
+      roundAnimation.goToAndPlay(0, true);
+    }
+    celebrationTimer = setTimeout(hideRoundCelebration, 1800);
+  }
+
+  function hideRoundCelebration() {
+    clearTimeout(celebrationTimer);
+    celebrationTimer = null;
+    elements.roundCelebration.classList.remove("is-visible");
+    elements.roundCelebration.hidden = true;
+    roundAnimation?.stop();
   }
 
   async function api(path, options) {
@@ -282,14 +524,14 @@
   async function run(operation) {
     if (state.busy) return;
     state.busy = true;
-    if (state.table) setTable(state.table);
+    if (state.table) syncActionButtons(state.table);
     try {
       await operation();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), true);
     } finally {
       state.busy = false;
-      if (state.table) setTable(state.table);
+      if (state.table) syncActionButtons(state.table);
     }
   }
 
@@ -305,14 +547,13 @@
   function clearHumanSession() {
     clearInterval(state.polling);
     state.polling = null;
+    if (state.tableId) forgetHumanToken(state.tableId);
     state.token = "";
+    state.tableId = "";
     state.table = null;
-    localStorage.removeItem(TOKEN_KEY);
-    sessionStorage.removeItem(TOKEN_KEY);
-    elements.setupPanel.hidden = false;
-    elements.tablePanel.hidden = true;
-    elements.connectionBadge.textContent = "尚未開桌";
-    elements.connectionBadge.classList.remove("online");
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+    sessionStorage.removeItem(LEGACY_TOKEN_KEY);
+    showManagement();
     setStatus("原本的牌桌已不存在，請重新開桌。", true);
   }
 
@@ -322,8 +563,25 @@
       state.remote = Boolean(config?.remote);
       elements.remoteAccessLabel.hidden = !state.remote;
       elements.remoteAccessKey.required = state.remote;
+      if (!state.token && !state.remote) return loadManagement();
+      return null;
     })
-    .catch(() => {});
+    .catch((error) => {
+      if (!state.remote) setStatus(error instanceof Error ? error.message : String(error), true);
+    });
 
-  if (state.token) refresh().then(startPolling).catch(() => clearHumanSession());
+  if (state.token) {
+    refresh().then(() => {
+      if (state.table && state.token) {
+        rememberHumanToken(state.table.table_id, state.token);
+        selectTable(state.table.table_id, state.token);
+      }
+      startPolling();
+    }).catch(() => clearHumanSession());
+  } else {
+    showManagement();
+  }
+  reducedMotion.addEventListener("change", (event) => {
+    if (event.matches) hideRoundCelebration();
+  });
 })();

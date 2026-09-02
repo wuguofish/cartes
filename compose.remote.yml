@@ -1,0 +1,37 @@
+name: cartes-remote
+
+services:
+  cartes:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cartes-remote:local
+    restart: "no"
+    environment:
+      CARTES_PUBLIC_URL: ${CARTES_PUBLIC_URL:?CARTES_PUBLIC_URL is required}
+      CARTES_STATE_KEY: ${CARTES_STATE_KEY:?CARTES_STATE_KEY is required}
+      CARTES_HUMAN_ACCESS_KEY: ${CARTES_HUMAN_ACCESS_KEY:?CARTES_HUMAN_ACCESS_KEY is required}
+      CARTES_REMOTE_HOST: 0.0.0.0
+      CARTES_REMOTE_PORT: 3210
+      CARTES_STATE_PATH: /app/data/cartes-state.enc.json
+      CARTES_REMOTE_KEYS_FILE: /run/secrets/remote-keys.json
+    ports:
+      - "127.0.0.1:${CARTES_BIND_PORT:-3210}:3210"
+    volumes:
+      - cartes-state:/app/data
+      - type: bind
+        source: ${CARTES_REMOTE_KEYS_PATH:-./data/remote-keys.json}
+        target: /run/secrets/remote-keys.json
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+
+volumes:
+  cartes-state:
